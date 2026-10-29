@@ -49,16 +49,49 @@ const PREFERENCE: Record<string, StrategyCandidate["label"]> = {
   growth: "Growth-tilted",
 };
 export const LABEL_ORDER: StrategyCandidate["label"][] = ["Cautious", "Balanced", "Growth-tilted"];
-/** Equity-share bands for strategy labels: Cautious < 30%, Balanced 30% to < 60%, Growth-tilted >= 60%. */
-export const LABEL_BANDS = { balancedFrom: 0.3, growthFrom: 0.6 };
+/**
+ * Upper-inclusive equity-share bands for strategy labels: Cautious up to 30%,
+ * Balanced above 30% up to 60%, Growth-tilted above 60%. The upper edges match
+ * STATED_RISK_CAP (steady 30%, balanced 60%), so a candidate at a preference's
+ * own cap carries that preference's label.
+ */
+export const LABEL_BANDS = { cautiousUpTo: 0.3, balancedUpTo: 0.6 };
+export const LABEL_BANDS_TEXT = "Cautious up to 30%, Balanced above 30% up to 60%, Growth-tilted above 60%";
 /** Candidates closer than this in equity share are treated as the same candidate. */
 const MIN_CANDIDATE_DISTANCE = 0.005;
 
 /** Honest label derived from the actual equity share (small tolerance for floating-point mixes). */
 export function labelForEquity(equityShare: number): StrategyCandidate["label"] {
-  if (equityShare >= LABEL_BANDS.growthFrom - 1e-9) return "Growth-tilted";
-  if (equityShare >= LABEL_BANDS.balancedFrom - 1e-9) return "Balanced";
+  if (equityShare > LABEL_BANDS.balancedUpTo + 1e-9) return "Growth-tilted";
+  if (equityShare > LABEL_BANDS.cautiousUpTo + 1e-9) return "Balanced";
   return "Cautious";
+}
+
+/**
+ * First rationale sentence. It names the limit that actually bound the choice:
+ * the constraints (the chosen candidate is the highest-equity one overall), the
+ * stated preference (a higher-equity candidate within the constraints was
+ * skipped because its label is riskier), or neither candidate matching the
+ * preference (the most cautious one is used).
+ */
+export function choiceSentence(
+  chosen: Pick<StrategyCandidate, "label" | "equityShare">,
+  candidates: Pick<StrategyCandidate, "label" | "equityShare">[],
+  matchesPreference: boolean,
+  cap: number,
+  preferredLabel: StrategyCandidate["label"],
+  preferenceStated = true,
+): string {
+  const pct = (x: number) => Math.round(x * 100);
+  const pref = preferenceStated ? `your stated preference (${preferredLabel})` : `the default preference (${preferredLabel}, no risk preference stated)`;
+  const capText = `max equity ${(cap * 100).toFixed(1)}%`;
+  const head = `${chosen.label} (about ${pct(chosen.equityShare)}% equity)`;
+  if (!matchesPreference)
+    return `${head} is the most cautious candidate allowed by the constraints (${capText}); no candidate matches ${pref}.`;
+  const highest = candidates.reduce((a, b) => (b.equityShare > a.equityShare ? b : a), chosen);
+  if (highest.equityShare <= chosen.equityShare)
+    return `${head} is the highest-equity candidate allowed by the constraints (${capText}) and not riskier than ${pref}.`;
+  return `${head} is the highest-equity candidate not riskier than ${pref}; ${highest.label} (about ${pct(highest.equityShare)}% equity) is allowed by the constraints (${capText}) but is riskier than that preference.`;
 }
 
 export function outcomeRangeOf(sim: SimulationResult): OutcomeRange {
@@ -335,8 +368,8 @@ export async function strategyAgent(ctx: StageContext): Promise<StageResult<Stra
   const eqPct = Math.round(chosen.equityShare * 100);
   const lowerRiskAlsoReaches = candidates.find((c) => c.gapLei === 0 && c.equityShare < chosen.equityShare);
   const rationale = [
-    `${chosen.label} (about ${eqPct}% equity) is the highest-equity candidate allowed by the constraints (max equity ${(cap * 100).toFixed(1)}%) and not riskier than your stated preference (${preferredLabel}).`,
-    "Labels follow the actual equity share: Cautious below 30%, Balanced 30% to below 60%, Growth-tilted 60% or more.",
+    choiceSentence(chosen, candidates, withinPreference.length > 0, cap, preferredLabel, risk !== undefined),
+    `Labels follow the actual equity share: ${LABEL_BANDS_TEXT}.`,
     maxBlockEquity < cap ? `Blocks with a longer recommended holding period than ${horizon} years are excluded.` : "",
     buckets.length ? `${buckets.length} liquidity bucket(s) totalling ${money(allocated())} lei are held in cash outside the invested part.` : "",
     lowerRiskAlsoReaches ? `${lowerRiskAlsoReaches.label} would also reach the target in the base case with less equity.` : "",

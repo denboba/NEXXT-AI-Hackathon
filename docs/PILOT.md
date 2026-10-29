@@ -60,8 +60,8 @@ Metrics use only events that exist in `EVENT_NAMES` (`src/analytics/events.ts`).
 | Risk | Mitigation in the prototype | Still needed |
 | --- | --- | --- |
 | Customers read the outcome range as a forecast or promise | Labelled "Seeded synthetic simulation, not a forecast"; banned-claims guardrail; disclosures mandatory | User testing of wording |
-| Plan released despite failed checks | 16 mandatory guardrail checks; failed checks withhold the plan; eval invariants | Independent model validation |
+| Plan released despite failed checks | 16 mandatory guardrail checks; failed checks withhold the plan; eval invariants. `simulation-reproducible` re-runs the same seeded function, so it checks input consistency, not the simulation model | Independent model validation, including of the outcome-range model |
 | Model invents facts or numbers | Model only extracts or words text; values re-validated; `narrative-numbers-match` check | Model-risk governance |
-| Personal data sent externally without consent | Engine gate plus server-side 403 without `consent.externalProcessing === true`; sanitized trace | Data protection impact assessment |
+| Personal data sent externally without consent | Engine gate plus server-side 403 for requests that do not declare `consent.externalProcessing === true` (a self-declared flag, not verified consent); sanitized trace | Data protection impact assessment |
 | Advisers over-trust the briefing | Briefing lists open issues and confirmation needs | Training; the regulated assessment stays mandatory |
 | Synthetic assumptions mistaken for bank views | Every assumption labelled synthetic | Replace with bank CMA |

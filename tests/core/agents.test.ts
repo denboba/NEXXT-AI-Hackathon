@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { profileAgent } from "../../src/agents/profile.ts";
 import { dataAgent } from "../../src/agents/data.ts";
-import { suitabilityAgent, horizonEquityCap, lossEquityCap } from "../../src/agents/suitability.ts";
-import { labelForEquity, strategyAgent } from "../../src/agents/strategy.ts";
+import { STATED_RISK_CAP, suitabilityAgent, horizonEquityCap, lossEquityCap } from "../../src/agents/suitability.ts";
+import { choiceSentence, labelForEquity, strategyAgent } from "../../src/agents/strategy.ts";
 import { challengerAgent } from "../../src/agents/challenger.ts";
 import { guardrailAgent, bannedClaims, unbackedSummaryNumbers } from "../../src/agents/guardrail.ts";
 import { nextStepAgent } from "../../src/agents/nextStep.ts";
 import { demoProfile } from "../../src/domain/demoProfile.ts";
+import { normalProfile } from "../../src/eval/scenarios.ts";
 import { replayProvider } from "../../src/providers/llm.ts";
 import { cachedFixtureProvider, failingProvider } from "../../src/providers/marketData.ts";
 import type { StageContext } from "../../src/orchestrator/context.ts";
@@ -120,9 +121,11 @@ test("strategy: candidates from the catalogue, never changes target/horizon", as
 test("strategy: honest labels from the equity share and distinct candidates", async () => {
   assert.equal(labelForEquity(0), "Cautious");
   assert.equal(labelForEquity(0.257), "Cautious");
-  assert.equal(labelForEquity(0.3), "Balanced");
-  assert.equal(labelForEquity(0.599), "Balanced");
-  assert.equal(labelForEquity(0.6), "Growth-tilted");
+  // Upper-inclusive bands: Cautious up to 30%, Balanced above 30% up to 60%, Growth-tilted above 60%.
+  assert.equal(labelForEquity(0.3), "Cautious");
+  assert.equal(labelForEquity(0.301), "Balanced");
+  assert.equal(labelForEquity(0.6), "Balanced");
+  assert.equal(labelForEquity(0.601), "Growth-tilted");
   assert.equal(labelForEquity(0.9), "Growth-tilted");
 
   const { ctx } = await pipeline(demoProfile);
@@ -153,6 +156,50 @@ test("strategy: honest labels from the equity share and distinct candidates", as
   assert.ok(g.weights.growth! > 0);
   const steadyPref = (await pipeline({ ...long, statedRisk: "steady" })).ctx.strategy!;
   assert.equal(steadyPref.label, "Cautious", "never riskier than the stated preference");
+});
+
+test("strategy: a candidate at each preference's suitability cap carries that preference's label", async () => {
+  const expected = { steady: "Cautious", balanced: "Balanced", growth: "Growth-tilted" } as const;
+  for (const risk of ["steady", "balanced", "growth"] as const) {
+    assert.equal(labelForEquity(STATED_RISK_CAP[risk]), expected[risk], `cap ${risk}`);
+    // Floating-point noise around the cap does not flip the label.
+    assert.equal(labelForEquity(STATED_RISK_CAP[risk] + 1e-12), expected[risk], `cap ${risk} + eps`);
+  }
+  // Balanced preference with a 60% cap: the 60% candidate passes every constraint and is chosen.
+  const { ctx } = await pipeline(normalProfile);
+  const s = ctx.strategy!;
+  assert.equal(ctx.suitability!.maxEquityShare, 0.6);
+  assert.equal(s.label, "Balanced");
+  assert.ok(Math.abs(s.equityShare - 0.6) < 0.005, `equity ${s.equityShare}`);
+  assert.equal(s.equityShare, Math.max(...s.candidates.map((c) => c.equityShare)), "highest-equity candidate");
+  assert.match(s.rationale, /is the highest-equity candidate allowed by the constraints \(max equity 60\.0%\)/);
+});
+
+test("strategy: rationale names the limit that actually bound the choice", async () => {
+  const cands = [
+    { label: "Cautious" as const, equityShare: 0.2 },
+    { label: "Balanced" as const, equityShare: 0.45 },
+    { label: "Growth-tilted" as const, equityShare: 0.7 },
+  ];
+  const byConstraints = choiceSentence(cands[2], cands, true, 0.7, "Growth-tilted");
+  assert.match(byConstraints, /highest-equity candidate allowed by the constraints \(max equity 70\.0%\)/);
+  const byPreference = choiceSentence(cands[1], cands, true, 0.7, "Balanced");
+  assert.doesNotMatch(byPreference, /allowed by the constraints \(max equity 70\.0%\) and not riskier/);
+  assert.match(byPreference, /highest-equity candidate not riskier than your stated preference \(Balanced\)/);
+  assert.match(byPreference, /Growth-tilted \(about 70% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference/);
+  const noMatch = choiceSentence(cands[1], cands.slice(1), false, 0.7, "Cautious");
+  assert.match(noMatch, /most cautious candidate allowed by the constraints .* no candidate matches your stated preference \(Cautious\)/);
+
+  // End to end: without a stated preference the default Balanced preference binds, and the
+  // 70% Growth-tilted candidate that met the constraints is named as skipped.
+  const s = (await pipeline({ ...normalProfile, statedRisk: undefined })).ctx.strategy!;
+  assert.equal(s.label, "Balanced");
+  assert.ok(s.candidates.some((c) => c.label === "Growth-tilted" && c.equityShare > s.equityShare));
+  assert.match(
+    s.rationale,
+    /^Balanced \(about 45% equity\) is the highest-equity candidate not riskier than the default preference \(Balanced, no risk preference stated\); Growth-tilted \(about 70% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference\./,
+  );
+  assert.doesNotMatch(s.rationale, /stated preference \(Balanced\)/);
 });
 
 test("challenger: seeded-outcome-range uses its own inputs; material only when the base case reaches but most paths miss", async () => {

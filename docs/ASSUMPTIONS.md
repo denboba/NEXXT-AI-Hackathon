@@ -73,9 +73,9 @@ Blocks whose recommended minimum holding period is longer than the horizon are e
 
 | Assumption | Value in code | Code location | Rationale |
 | --- | --- | --- | --- |
-| Label bands (from the actual equity share) | Cautious below 30%; Balanced 30% to below 60%; Growth-tilted 60% or more | `LABEL_BANDS`, `labelForEquity`, `src/agents/strategy.ts` | A label must describe the allocation honestly, even after a revision lowers the equity share (Ana v2 at 25.7% is Cautious). |
+| Label bands (from the actual equity share) | Cautious up to 30%; Balanced above 30% up to 60%; Growth-tilted above 60% (upper-inclusive) | `LABEL_BANDS`, `labelForEquity`, `src/agents/strategy.ts` | A label must describe the allocation honestly, even after a revision lowers the equity share (Ana v2 at 25.7% is Cautious). The upper edges match `STATED_RISK_CAP` (steady 30%, balanced 60%), so a candidate at a preference's own cap is not excluded as one band too risky. |
 | Candidates | most cautious eligible mix, the midpoint and the maximum allowed equity; candidates closer than 0.5 percentage points are merged | `strategy.ts` | Spans the allowed range so the comparison is meaningful. |
-| Choice | highest-equity candidate whose label is not riskier than the stated preference | `strategy.ts` | Respects both the constraints and the customer's preference. |
+| Choice | highest-equity candidate whose label is not riskier than the stated preference (Balanced when none is stated) | `strategy.ts` | Respects both the constraints and the customer's preference. The rationale says which of the two limited the choice (`choiceSentence`). |
 
 ## Execution limits
 
