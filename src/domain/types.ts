@@ -112,7 +112,7 @@ export type CapitalMarketAssumptions = {
 
 export type ProvenanceEntry = { field: string; source: string; asOf?: string };
 
-export type DataFlag = "synthetic-assumptions" | "fallback-applied" | "stale-source-rejected";
+export type DataFlag = "synthetic-assumptions" | "fallback-applied" | "stale-source-rejected" | "default-volatility-applied";
 
 export type DataReport = {
   assumptions: CapitalMarketAssumptions;
@@ -214,8 +214,14 @@ export type OutcomeRange = {
   worstPathMaxDrawdown: number;
   /** Annual portfolio volatility used (decimal) and where the inputs came from. */
   portfolioVolatility: number;
-  volatilitySource: "market-data-payload" | "synthetic-default";
+  /** 'mixed' when some asset classes had a payload volatility and others used the synthetic default. */
+  volatilitySource: VolatilitySource;
+  /** Per asset class: payload volatility or the labelled synthetic default. */
+  volatilityByClassSource: Record<AssetClass, VolatilityClassSource>;
 };
+
+export type VolatilityClassSource = "market-data-payload" | "synthetic-default";
+export type VolatilitySource = VolatilityClassSource | "mixed";
 
 export type ProjectionSummary = {
   nominal: number;

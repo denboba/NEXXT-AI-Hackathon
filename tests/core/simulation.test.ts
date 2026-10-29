@@ -4,12 +4,15 @@ import {
   DEFAULT_VOLATILITY,
   SIMULATION_PATHS,
   SIMULATION_SEED,
+  defaultedVolatilityClasses,
   drawNormals,
+  missingVolatilityClasses,
   mulberry32,
   percentile,
   portfolioVolatility,
   simulateGoal,
   solveLevers,
+  volatilityProvenance,
 } from "../../src/domain/simulation.ts";
 import type { SimulationInput } from "../../src/domain/simulation.ts";
 import { LEI_TOLERANCE, blendedAssumptions, projectGoal } from "../../src/domain/calculations.ts";
@@ -116,6 +119,33 @@ test("simulation: volatility comes from the payload or a labelled synthetic defa
   assert.ok(Math.abs(portfolioVolatility({ equity: 1, bond: 0, cash: 0 }, DEFAULT_VOLATILITY, 0.2) - 0.16) < 1e-12);
   assert.equal(percentile(Float64Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 0.1), 1);
   assert.equal(percentile(Float64Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 0.5), 5);
+});
+
+test("simulation: partial payload volatility is used per class, the rest defaults and the source is 'mixed'", () => {
+  const equityOnly: CapitalMarketAssumptions = {
+    ...cma,
+    assetClasses: {
+      equity: { expectedReturn: 0.09, stressDrawdown: 0.2, volatility: 0.24 },
+      bond: { expectedReturn: 0.03, stressDrawdown: 0.05 },
+      cash: { expectedReturn: 0.025, stressDrawdown: 0 },
+    },
+  };
+  const r = simulateGoal({ ...base, assumptions: equityOnly });
+  assert.equal(r.volatilitySource, "mixed");
+  assert.deepEqual(r.volatilityByClassSource, { equity: "market-data-payload", bond: "synthetic-default", cash: "synthetic-default" });
+  assert.deepEqual(r.assumptionsUsed.volatility, { equity: 0.24, bond: DEFAULT_VOLATILITY.bond, cash: DEFAULT_VOLATILITY.cash });
+  const allDefault = simulateGoal({
+    ...base,
+    assumptions: { ...equityOnly, assetClasses: { ...equityOnly.assetClasses, equity: { expectedReturn: 0.09, stressDrawdown: 0.2 } } },
+  });
+  assert.equal(allDefault.volatilitySource, "synthetic-default");
+  assert.ok(r.portfolioVolatility > allDefault.portfolioVolatility + 1e-6, "the payload equity volatility is not discarded");
+  assert.deepEqual(missingVolatilityClasses(equityOnly), ["bond", "cash"]);
+  assert.deepEqual(defaultedVolatilityClasses(r), ["bond", "cash"]);
+  assert.equal(volatilityProvenance(r), "synthetic assumptions; default volatility for bond, cash");
+  assert.equal(volatilityProvenance(allDefault), "synthetic default");
+  assert.equal(volatilityProvenance(simulateGoal(base)), "synthetic assumptions");
+  assert.deepEqual(simulateGoal(base).volatilityByClassSource, { equity: "market-data-payload", bond: "market-data-payload", cash: "market-data-payload" });
 });
 
 test("simulation: invalid inputs throw RangeError", () => {

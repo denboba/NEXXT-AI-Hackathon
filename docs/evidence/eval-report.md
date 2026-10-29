@@ -5,11 +5,12 @@
 - Synthetic: all customers, products and market assumptions are invented test fixtures. Pass/fail comes only from assertions executed against the real orchestrator output.
 - Node version used: v22.23.4
 
-Scenarios: 21 total, 21 passed, 0 failed, 0 skipped. Assertions: 317/317 passed (scenario-specific expectations plus global invariants).
+Scenarios: 23 total, 23 passed, 0 failed, 0 skipped. Assertions: 350/350 passed (scenario-specific expectations plus global invariants).
 
 | Scenario | Category | What it checks | Result | Terminal status | Assertions | Revisions | Model calls | Tool calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `normal-journey` | normal-journey | Complete inputs produce a validated, coherent assessment | PASS | completed | 17/17 | 0 | 3 | 12 |
+| `no-stated-risk-preference` | normal-journey | No stated risk preference but a stated loss limit: no question, the default Balanced preference is named | PASS | completed | 17/17 | 0 | 3 | 14 |
 | `missing-information` | missing-information | Missing horizon and loss tolerance: ask, never invent | PASS | needs-clarification | 16/16 | 0 | 1 | 0 |
 | `constraint-mismatch` | constraint-mismatch | Growth proposal violating a 3-year horizon and a near-term withdrawal is revised | PASS | completed | 17/17 | 1 | 4 | 15 |
 | `challenger-rejection` | challenger-rejection | Demo profile: challenger finds material weaknesses and triggers a targeted reassessment | PASS | completed | 18/18 | 1 | 5 | 23 |
@@ -27,6 +28,7 @@ Scenarios: 21 total, 21 passed, 0 failed, 0 skipped. Assertions: 317/317 passed 
 | `loop-limit` | loop-limit | Perpetual objections stop at the revision limit and the plan is withheld | PASS | withheld | 16/16 | 2 | 4 | 25 |
 | `spoofed-live-data` | market-data | A cached snapshot claiming to be live data is rejected (never shown as live) | PASS | completed | 13/13 | 0 | 3 | 12 |
 | `malformed-market-data` | market-data | Structurally invalid market data is rejected and the synthetic fallback disclosed | PASS | completed | 13/13 | 0 | 3 | 12 |
+| `partial-volatility-market-data` | market-data | Market data with volatility for equity only (20%): payload value kept, defaults named per class, run not blocked | PASS | completed | 16/16 | 0 | 3 | 12 |
 | `invalid-input` | input-validation | Invalid values are reported back, never silently dropped or repaired | PASS | needs-clarification | 13/13 | 0 | 1 | 0 |
 | `seeded-range-determinism` | seeded-simulation | The seeded outcome range is reproducible; another seed changes the paths but keeps percentiles ordered | PASS | completed | 15/15 | 1 | 5 | 23 |
 | `tool-budget-exceeded` | tool-budget | A tiny tool-call budget stops the run with an explicit reason; nothing is validated | PASS | failed | 14/14 | 0 | 1 | 3 |

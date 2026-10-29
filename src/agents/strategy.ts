@@ -23,7 +23,7 @@ import {
   roundLei,
 } from "../domain/calculations.ts";
 import type { GoalProjection, ProjectionInput, Withdrawal } from "../domain/calculations.ts";
-import { MIN_REACH_SHARE, OUTCOME_RANGE_FINDING, SIMULATION_PATHS, SIMULATION_SEED, SOLVER_THRESHOLDS } from "../domain/simulation.ts";
+import { MIN_REACH_SHARE, OUTCOME_RANGE_FINDING, SIMULATION_PATHS, SIMULATION_SEED, SOLVER_THRESHOLDS, volatilityProvenance } from "../domain/simulation.ts";
 import type { SimulationInput, SimulationResult } from "../domain/simulation.ts";
 import { money } from "../lib/finance.ts";
 import { parseExplanation } from "../providers/llm.ts";
@@ -122,6 +122,7 @@ export function outcomeRangeOf(sim: SimulationResult): OutcomeRange {
     worstPathMaxDrawdown: sim.worstPathMaxDrawdown,
     portfolioVolatility: sim.portfolioVolatility,
     volatilitySource: sim.volatilitySource,
+    volatilityByClassSource: sim.volatilityByClassSource,
   };
 }
 
@@ -417,7 +418,7 @@ export async function strategyAgent(ctx: StageContext): Promise<StageResult<Stra
       `Fees ${(blend.fee * 100).toFixed(2)}%/yr deducted from returns.`,
       `Inflation ${(cma.inflation * 100).toFixed(1)}%/yr for today's-money values.`,
       "Contributions at the end of each month; withdrawals at the end of their year; amounts in lei, rounded only for display.",
-      `Outcome range: ${money(outcomeRange.paths)} seeded synthetic paths (seed ${outcomeRange.seed}), portfolio volatility ${(outcomeRange.portfolioVolatility * 100).toFixed(1)}%/yr (${outcomeRange.volatilitySource === "market-data-payload" ? "from the synthetic assumptions" : "synthetic default"}); a simulation, not a forecast.`,
+      `Outcome range: ${money(outcomeRange.paths)} seeded synthetic paths (seed ${outcomeRange.seed}), portfolio volatility ${(outcomeRange.portfolioVolatility * 100).toFixed(1)}%/yr (${outcomeRange.volatilitySource === "synthetic-default" ? "synthetic default" : `from the ${volatilityProvenance(outcomeRange)}`}); a simulation, not a forecast.`,
     ],
     projection: chosen.projection,
     gapLei: chosen.gapLei,

@@ -81,6 +81,23 @@ test("data: stale cached data falls back to synthetic with a flag; no fallback f
   assert.equal(fresh.output.ageDays, 28);
   await assert.rejects(dataAgent(makeContext(demoProfile, { profile, marketData: failingProvider(), fallbackMarketData: null })), (e: Error & { reason?: string }) => e.reason === "market-data-unavailable");
   assert.ok(stale.output.provenance.some((p) => p.field === "capitalMarketAssumptions" && p.asOf));
+  assert.ok(!fresh.output.flags.includes("default-volatility-applied"), "complete payload: no default volatility");
+});
+
+test("data: partial payload volatility is accepted with a visible, non-blocking flag and note", async () => {
+  const profile = (await profileAgent(makeContext(demoProfile))).output;
+  const full = cachedFixtureProvider("2026-02-01");
+  const base = await full.getAssumptions(new AbortController().signal);
+  const { equity, bond, cash } = base.assetClasses;
+  const partial = cachedFixtureProvider("2026-02-01", {
+    assetClasses: { equity, bond: { expectedReturn: bond.expectedReturn, stressDrawdown: bond.stressDrawdown }, cash: { expectedReturn: cash.expectedReturn, stressDrawdown: cash.stressDrawdown } },
+  });
+  const r = await dataAgent(makeContext(demoProfile, { profile, marketData: partial }));
+  assert.equal(r.output.assumptions.kind, "cached");
+  assert.equal(r.output.freshness, "fresh");
+  assert.deepEqual(r.output.flags, ["default-volatility-applied"]);
+  assert.ok(r.output.notes.some((n) => n.startsWith("Volatility missing for bond, cash")));
+  assert.ok(r.notes.some((n) => n.event === "validation" && n.summary === "volatility missing for bond, cash; synthetic default applied"));
 });
 
 test("suitability: caps, reserve rule and never overriding constraints", async () => {

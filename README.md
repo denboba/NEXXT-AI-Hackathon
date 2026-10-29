@@ -9,7 +9,7 @@ The **Decision Lab** extends the coach into a bounded multi-stage workflow: **Go
 **Without installing anything** (Node.js with native TypeScript type stripping: Node 24 as declared in `engines`, also verified on Node 22.23.4; no `npm ci`, no network, no API key):
 
 1. `npm run demo -- --replay monthlyContribution=900` prints the full Ana journey: stage timeline (fresh or reused, with the reason), every traced tool call, the challenger findings with severity and evidence, the v1 vs v2 strategy comparison (label, equity, buckets, projection, seeded outcome range, reach share, and the rationale sentence that names which limit bound the choice), the 16 guardrail checks, levers, the next step and a counterfactual replay showing which stages were reused or recomputed.
-2. `npm run eval` runs all 21 evaluation scenarios against the real orchestrator (exit 1 on any failure).
+2. `npm run eval` runs all 23 evaluation scenarios against the real orchestrator (exit 1 on any failure).
 3. `npm run test:core` runs the dependency-free unit and integration tests.
 4. Read the committed evidence: [docs/evidence/demo-ana.md](docs/evidence/demo-ana.md) and [docs/evidence/eval-report.md](docs/evidence/eval-report.md). Both are generated output (fixed clock, fixed seed, synthetic data); `npm run evidence:check` regenerates them in memory and fails if they differ, and `npm run evidence` rewrites them.
 5. Domain and business documents: [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) (every policy number and synthetic assumption with its code location and pilot replacement) and [docs/PILOT.md](docs/PILOT.md) (pilot proposal, metric definitions mapped to the analytics events, risks).
@@ -21,7 +21,7 @@ The **Decision Lab** extends the coach into a bounded multi-stage workflow: **Go
 3. Inspect the stage timeline (with tool-call chips), the challenger findings and the revision (v1 vs v2 comparison, including the seeded range of outcomes).
 4. Use **Replay with this change** (for example a higher monthly contribution) to see which stages are reused and which are recomputed.
 5. Click **Preview adviser briefing** and walk through the consent step; export is only possible after consent and is a local download.
-6. Open `/lab` and click **Run all 21 scenarios**; open any scenario and use **Replay with modified input**.
+6. Open `/lab` and click **Run all 23 scenarios**; open any scenario and use **Replay with modified input**.
 7. Open `/growth` for the funnel and business hypothesis.
 
 No API key is needed: without one the deterministic provider is used and labelled in the UI. The UI steps have not been rendered in the build sandbox (see Verification status).
@@ -158,6 +158,7 @@ All scenarios are synthetic and deterministic (fixed clock 2026-01-15). Each che
 | Scenario                  | What it shows                                                                              |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
 | `normal-journey`          | Consistent profile is validated with no material findings.                                 |
+| `no-stated-risk-preference` | Same customer without a risk preference: no question (the loss limit suffices), the default Balanced preference is named, all 16 checks pass. |
 | `missing-information`     | Facts invented by the model are rejected; targeted questions, needs-clarification.         |
 | `constraint-mismatch`     | Over-aggressive draft for a 3-year goal is challenged and revised; v1 never released.      |
 | `challenger-rejection`    | Ana demo: severe-crash and liquidity findings trigger a revision.                          |
@@ -175,6 +176,7 @@ All scenarios are synthetic and deterministic (fixed clock 2026-01-15). Each che
 | `loop-limit`              | Challenger that always objects: stops at the revision limit, withheld with explanation.    |
 | `spoofed-live-data`       | Payload claiming live data is rejected; synthetic fallback used.                           |
 | `malformed-market-data`   | Malformed market payload rejected; fallback used.                                          |
+| `partial-volatility-market-data` | Fresh payload with volatility for equity only (20%): equity value kept, bond and cash use the named synthetic default (`mixed`), disclosed as an open issue, not blocking. |
 | `invalid-input`           | Negative contribution or out-of-range loss value: needs-clarification, no facts stored.    |
 | `seeded-range-determinism` | Same seed gives a byte-identical outcome range; another seed changes paths, percentiles stay ordered; simulation traced as tool calls. |
 | `tool-budget-exceeded`    | `maxToolCalls` 3: run fails with `tool-budget-exceeded`, later stages skipped, nothing validated. |
@@ -188,8 +190,8 @@ Commands below were run in the build sandbox for this revision (Node v22.23.4, g
 | Command                                   | Result                                                                                      |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `npm run demo`                            | Ana journey printed (completed, validated-with-open-issues, 1 revision, 23 tool calls, 16 of 16 guardrail checks); exit 0 |
-| `npm run eval`                            | 21 scenarios, 21 passed, 0 failed; 317/317 assertions; exit 0                               |
-| `npm run test:core`                       | 121 tests, 121 pass, 0 fail                                                                 |
+| `npm run eval`                            | 23 scenarios, 23 passed, 0 failed; 350/350 assertions; exit 0                               |
+| `npm run test:core`                       | 125 tests, 125 pass, 0 fail                                                                 |
 | `npm run evidence:check`                  | both `docs/evidence` files match freshly generated output; exit 0                           |
 | `npm run typecheck:core`                  | exit 0                                                                                      |
 | `npm run check:syntax`                    | `check-syntax: 49 file(s) OK (47 src via TypeScript 5.9.2, 2 server/*.mjs via node --check).` |

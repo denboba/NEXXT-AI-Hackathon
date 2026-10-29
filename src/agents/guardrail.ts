@@ -8,6 +8,7 @@
 import type { ChallengeReport, ValidationCheck, ValidationReport } from "../domain/types.ts";
 import { catalogue } from "../domain/catalogue.ts";
 import { LEI_TOLERANCE, approxEqual, blendedAssumptions, projectGoal, stressLoss } from "../domain/calculations.ts";
+import { missingVolatilityClasses } from "../domain/simulation.ts";
 import { REQUIRED_DISCLOSURES } from "./strategy.ts";
 import { SEVERE_CRASH } from "./challenger.ts";
 import { StageError } from "../orchestrator/context.ts";
@@ -156,6 +157,8 @@ export async function guardrailAgent(ctx: StageContext): Promise<StageResult<Val
         : data.freshness === "fresh";
     add("market-data-acceptable", dataOk, `${a.kind} (${a.sourceLabel}), freshness ${data.freshness}${data.flags.includes("fallback-applied") ? ", fallback disclosed" : ""}`);
     if (data.flags.includes("fallback-applied")) openIssues.push("Market assumptions fell back to synthetic planning values.");
+    if (data.flags.includes("default-volatility-applied"))
+      openIssues.push(`Outcome range uses the synthetic default volatility for ${missingVolatilityClasses(a).join(", ")} (not in the market-data payload).`);
 
     const missingDisclosures = REQUIRED_DISCLOSURES.filter((d) => !s.disclosures.includes(d));
     add("disclosures-present", missingDisclosures.length === 0, missingDisclosures.length ? `missing: ${missingDisclosures.join(", ")}` : "all mandatory disclosures present");

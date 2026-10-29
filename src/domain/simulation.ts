@@ -20,7 +20,9 @@
 import { purchasingPower } from "../lib/finance.ts";
 import { LEI_TOLERANCE } from "./calculations.ts";
 import type { Withdrawal } from "./calculations.ts";
-import type { AssetClass, CapitalMarketAssumptions, OutcomeRange } from "./types.ts";
+import type { AssetClass, CapitalMarketAssumptions, OutcomeRange, VolatilityClassSource, VolatilitySource } from "./types.ts";
+
+const ASSET_CLASSES: AssetClass[] = ["equity", "bond", "cash"];
 
 /** Fixed default seed so every run of the demo and the eval suite is reproducible. */
 export const SIMULATION_SEED = 20260115;
@@ -28,8 +30,9 @@ export const SIMULATION_SEED = 20260115;
 export const SIMULATION_PATHS = 1000;
 export const MAX_SIMULATION_PATHS = 20000;
 /**
- * Illustrative synthetic volatility used only when a market-data payload has
- * none. Same values as syntheticAssumptions() in providers/marketData.ts.
+ * Illustrative synthetic volatility used, per asset class, only when a
+ * market-data payload has none for that class. Same values as
+ * syntheticAssumptions() in providers/marketData.ts.
  */
 export const DEFAULT_VOLATILITY: Record<AssetClass, number> = { equity: 0.16, bond: 0.05, cash: 0.005 };
 export const DEFAULT_EQUITY_BOND_CORRELATION = 0.2;
@@ -132,14 +135,44 @@ function assertSimulation(s: SimulationInput) {
     throw new RangeError("Invalid simulation inputs");
 }
 
+/** Asset classes (in display order) whose volatility is missing from a market-data payload. */
+export function missingVolatilityClasses(a: CapitalMarketAssumptions): AssetClass[] {
+  return ASSET_CLASSES.filter((cls) => a.assetClasses[cls].volatility === undefined);
+}
+
+/** Asset classes (in display order) whose simulation volatility came from the synthetic default. */
+export function defaultedVolatilityClasses(r: Pick<OutcomeRange, "volatilityByClassSource">): AssetClass[] {
+  return ASSET_CLASSES.filter((cls) => r.volatilityByClassSource[cls] === "synthetic-default");
+}
+
+/**
+ * Short provenance label for the volatility used: 'synthetic assumptions',
+ * 'synthetic default', or for a partial payload 'synthetic assumptions;
+ * default volatility for bond, cash' (naming the defaulted classes).
+ */
+export function volatilityProvenance(r: Pick<OutcomeRange, "volatilitySource" | "volatilityByClassSource">): string {
+  if (r.volatilitySource === "synthetic-default") return "synthetic default";
+  const defaulted = defaultedVolatilityClasses(r);
+  return defaulted.length ? `synthetic assumptions; default volatility for ${defaulted.join(", ")}` : "synthetic assumptions";
+}
+
+/**
+ * Per asset class: the payload volatility when present, otherwise the
+ * labelled synthetic default. Provenance is recorded per class, so a partial
+ * payload is never silently replaced by defaults for every class.
+ */
 function volatilityOf(a: CapitalMarketAssumptions) {
-  const v = (cls: AssetClass) => a.assetClasses[cls].volatility;
-  const fromPayload = v("equity") !== undefined && v("bond") !== undefined && v("cash") !== undefined;
-  const volatility: Record<AssetClass, number> = fromPayload
-    ? { equity: v("equity")!, bond: v("bond")!, cash: v("cash")! }
-    : { ...DEFAULT_VOLATILITY };
+  const volatility = {} as Record<AssetClass, number>;
+  const byClass = {} as Record<AssetClass, VolatilityClassSource>;
+  for (const cls of ASSET_CLASSES) {
+    const v = a.assetClasses[cls].volatility;
+    volatility[cls] = v ?? DEFAULT_VOLATILITY[cls];
+    byClass[cls] = v === undefined ? "synthetic-default" : "market-data-payload";
+  }
+  const defaulted = ASSET_CLASSES.filter((cls) => byClass[cls] === "synthetic-default").length;
+  const source: VolatilitySource = defaulted === 0 ? "market-data-payload" : defaulted === ASSET_CLASSES.length ? "synthetic-default" : "mixed";
   const rho = a.equityBondCorrelation ?? DEFAULT_EQUITY_BOND_CORRELATION;
-  return { volatility, rho, source: fromPayload ? ("market-data-payload" as const) : ("synthetic-default" as const) };
+  return { volatility, rho, source, byClass };
 }
 
 /** Annual volatility of the blended mix (single-factor approximation, see header). */
@@ -240,6 +273,7 @@ export function simulateGoal(input: SimulationInput): SimulationResult {
     worstPathMaxDrawdown: worstDrawdown,
     portfolioVolatility: prep.sigmaP,
     volatilitySource: prep.vol.source,
+    volatilityByClassSource: prep.vol.byClass,
     assumptionsUsed: {
       grossReturn: prep.grossReturn,
       fee: input.fee,

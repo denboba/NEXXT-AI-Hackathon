@@ -86,6 +86,8 @@ export function describeMarketData(spec: MarketDataSpec) {
       return "malformed provider";
     case "spoofed-live":
       return "cached snapshot whose payload claims 'live'";
+    case "partial-volatility":
+      return `cached synthetic snapshot as of ${spec.asOf} with volatility for equity only (20%)`;
   }
 }
 
@@ -125,6 +127,20 @@ function buildMarketData(spec: MarketDataSpec): { primary: MarketDataProvider; f
         },
         fallback: undefined,
       };
+    case "partial-volatility": {
+      const { equity, bond, cash } = syntheticAssumptions(spec.asOf).assetClasses;
+      return {
+        primary: cachedFixtureProvider(spec.asOf, {
+          // Equity volatility differs from the 16% default, so keeping the payload value is observable.
+          assetClasses: {
+            equity: { ...equity, volatility: 0.2 },
+            bond: { expectedReturn: bond.expectedReturn, stressDrawdown: bond.stressDrawdown },
+            cash: { expectedReturn: cash.expectedReturn, stressDrawdown: cash.stressDrawdown },
+          },
+        }),
+        fallback: undefined,
+      };
+    }
   }
 }
 

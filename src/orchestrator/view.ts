@@ -2,6 +2,7 @@
 // evidence shown in the Decision Lab and the Evaluation Lab. Everything here
 // is derived from recorded stage outputs and executions; nothing is invented.
 import type { ChallengeReport, Finding, IntakeInput, Lever, OutcomeRange, Strategy, SuitabilityReport } from "../domain/types.ts";
+import { volatilityProvenance } from "../domain/simulation.ts";
 import { STAGE_ORDER } from "./context.ts";
 import type { StageId } from "./context.ts";
 import type { StageExecution, Transition, WorkflowState } from "./engine.ts";
@@ -98,7 +99,7 @@ export function outcomeRangeRows(r: OutcomeRange): OutcomeRow[] {
     { label: "Paths reaching the target", value: pct(r.reachShare) },
     { label: "Worst peak-to-trough fall on any path", value: pct(r.worstPathMaxDrawdown) },
     { label: "Paths · seed", value: `${r.paths.toLocaleString("en-GB")} · ${r.seed}` },
-    { label: "Portfolio volatility used", value: `${pct(r.portfolioVolatility)}/yr (${r.volatilitySource === "market-data-payload" ? "synthetic assumptions" : "synthetic default"})` },
+    { label: "Portfolio volatility used", value: `${pct(r.portfolioVolatility)}/yr (${volatilityProvenance(r)})` },
   ];
 }
 

@@ -10,7 +10,7 @@ import { catalogue } from "../domain/catalogue.ts";
 import { blendedAssumptions } from "../domain/calculations.ts";
 import { replay } from "../providers/llm.ts";
 import type { ReplayFixtures } from "../providers/llm.ts";
-import { strategyAgent, projectSleeve, gapFor, outcomeRangeOf } from "../agents/strategy.ts";
+import { LABEL_BANDS, LABEL_ORDER, strategyAgent, projectSleeve, gapFor, outcomeRangeOf } from "../agents/strategy.ts";
 import { simulateGoal } from "../domain/simulation.ts";
 import type { SimulationInput } from "../domain/simulation.ts";
 import { bannedClaims } from "../agents/guardrail.ts";
@@ -61,7 +61,9 @@ export type MarketDataSpec =
   | { kind: "slow"; delayMs: number }
   | { kind: "malformed" }
   /** Cached synthetic snapshot whose payload falsely claims kind 'live'. */
-  | { kind: "spoofed-live" };
+  | { kind: "spoofed-live" }
+  /** Fresh cached synthetic snapshot that carries volatility for equity only (20%, not the 16% default). */
+  | { kind: "partial-volatility"; asOf: string };
 
 export type ScenarioExpected = {
   terminalStatus: TerminalStatus;
@@ -107,6 +109,9 @@ export const normalProfile: IntakeInput = {
   freeText: "I would like 60,000 lei for a renovation in 10 years.",
   inputSource: "scenario-fixture",
 };
+
+/** The same customer without a stated risk preference (the loss limit is still stated). */
+const { statedRisk: _omitted, ...noStatedRiskProfile } = normalProfile;
 
 const DETERMINISTIC = { kind: "deterministic" } as const;
 const SYNTHETIC = { kind: "synthetic" } as const;
@@ -213,6 +218,50 @@ export const SCENARIOS: Scenario[] = [
       assertion("next-step-review-plan", "Next step is to review the validated plan; no adviser escalation needed", (run) => {
         const n = run.result?.nextStep;
         return check(n?.primary === "review-validated-plan" && n.adviser.recommended === false, `primary ${n?.primary}, adviser ${n?.adviser.recommended}`);
+      }),
+    ],
+  },
+  {
+    id: "no-stated-risk-preference",
+    title: "No stated risk preference but a stated loss limit: no question, the default Balanced preference is named",
+    category: "normal-journey",
+    covers: "1, 2",
+    synthetic: true,
+    input: noStatedRiskProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+      maxRevisions: 0,
+    },
+    assertions: [
+      assertion("no-risk-question", "The stated loss limit is enough: no clarification question, no invented risk preference", (run) => {
+        const p = profileOf(run);
+        const questions = (run.result?.nextStep?.questions ?? []).map((q) => q.field);
+        return check(
+          !!p && p.facts.statedRisk === undefined && p.facts.maxAcceptableLossPct?.value === 0.25 && questions.length === 0 && !p.missing.includes("maxAcceptableLossPct|statedRisk"),
+          `facts.statedRisk=${p?.facts.statedRisk?.value}, questions [${questions.join(", ")}], missing [${p?.missing.join(", ")}]`,
+        );
+      }),
+      assertion("default-preference-named", "The choice rationale names the default preference instead of a stated one", (run) => {
+        const s = finalStrategy(run);
+        const r = s?.rationale ?? "";
+        return check(r.includes("the default preference (Balanced, no risk preference stated)") && !r.includes("your stated preference"), r.split(";")[0] || "no released strategy");
+      }),
+      assertion("not-riskier-than-balanced", "The released strategy is not riskier than Balanced and stays within the suitability cap", (run) => {
+        const s = finalStrategy(run);
+        const suit = suitabilityOf(run);
+        if (!s || !suit) return fail("no released strategy");
+        return check(
+          LABEL_ORDER.indexOf(s.label) <= LABEL_ORDER.indexOf("Balanced") && s.equityShare <= LABEL_BANDS.balancedUpTo + 1e-9 && s.equityShare <= suit.maxEquityShare + 1e-9,
+          `${s.label}: equity ${pct(s.equityShare)}, cap ${pct(suit.maxEquityShare)}`,
+        );
+      }),
+      assertion("all-checks-pass", "All 16 guardrail checks run and pass", (run) => {
+        const checks = run.result?.validation?.checks ?? [];
+        const failed = checks.filter((c) => !c.pass).map((c) => c.id);
+        return check(checks.length === 16 && failed.length === 0, `${checks.length} checks, failed [${failed.join(", ")}]`);
       }),
     ],
   },
@@ -805,6 +854,53 @@ export const SCENARIOS: Scenario[] = [
         const d = dataOf(run);
         const retried = traceHas(run, (t) => t.stage === "data" && t.event === "retry" && t.summary.includes("malformed"));
         return check(!!d && d.flags.includes("fallback-applied") && retried, `retried ${retried}, flags [${d?.flags.join(", ")}]`);
+      }),
+    ],
+  },
+  {
+    id: "partial-volatility-market-data",
+    title: "Market data with volatility for equity only (20%): payload value kept, defaults named per class, run not blocked",
+    category: "market-data",
+    covers: "6, extra",
+    synthetic: true,
+    input: normalProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: { kind: "partial-volatility", asOf: "2026-01-10" } },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated-with-open-issues",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("partial-volatility-flagged", "The data stage accepts the fresh payload, flags the default volatility and records it in the trace", (run) => {
+        const d = dataOf(run);
+        const traced = traceHas(run, (t) => t.stage === "data" && t.event === "validation" && t.summary === "volatility missing for bond, cash; synthetic default applied");
+        return check(
+          !!d && d.assumptions.kind === "cached" && d.freshness === "fresh" && !d.flags.includes("fallback-applied") && d.flags.includes("default-volatility-applied") && traced,
+          `kind ${d?.assumptions.kind}, freshness ${d?.freshness}, flags [${d?.flags.join(", ")}], traced ${traced}`,
+        );
+      }),
+      assertion("mixed-provenance", "The outcome range reports 'mixed' volatility: payload for equity, synthetic default for bond and cash", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const r = s.outcomeRange;
+        const byClass = r.volatilityByClassSource;
+        const used = simulateGoal({ ...args, seed: r.seed, paths: r.paths }).assumptionsUsed.volatility;
+        return check(
+          r.volatilitySource === "mixed" && byClass.equity === "market-data-payload" && byClass.bond === "synthetic-default" && byClass.cash === "synthetic-default" && used.equity === 0.2,
+          `source ${r.volatilitySource}, equity ${byClass.equity} (${pct(used.equity)}), bond ${byClass.bond} (${pct(used.bond)}), cash ${byClass.cash} (${pct(used.cash)})`,
+        );
+      }),
+      assertion("defaulted-classes-named", "The strategy assumptions and the open issues name the defaulted classes", (run) => {
+        const s = finalStrategy(run);
+        const line = s?.assumptions.find((a) => a.startsWith("Outcome range:")) ?? "";
+        const issue = (run.result?.validation?.openIssues ?? []).find((i) => /default volatility/.test(i)) ?? "";
+        return check(line.includes("default volatility for bond, cash") && issue.includes("bond, cash"), `${line.slice(line.indexOf("("))} | ${issue}`);
+      }),
+      assertion("checks-pass", "Every guardrail check still passes; the gap is disclosed, not blocking", (run) => {
+        const checks = run.result?.validation?.checks ?? [];
+        const failed = checks.filter((c) => !c.pass).map((c) => c.id);
+        return check(checks.length === 16 && failed.length === 0, `${checks.length} checks, failed [${failed.join(", ")}]`);
       }),
     ],
   },
