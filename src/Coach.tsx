@@ -25,7 +25,7 @@ import type { Message } from "./lib/journey";
 import { track } from "./lib/analytics";
 const answerStages = ["monthly", "horizon", "risk"];
 const welcome =
-  "Hi! I’m your Investment Coach. Let’s explore what you could do with money you can set aside each month. I’ll explain the numbers, answer your questions, and help you understand the options — without the jargon.";
+  "Hi! I’m your Investment Coach. Let’s explore what you could do with money you can set aside each month. I’ll explain the numbers, answer your questions, and help you understand the options, without the jargon.";
 const questions = [
   "How much could you comfortably set aside each month?",
   "When might you want to use this money?",

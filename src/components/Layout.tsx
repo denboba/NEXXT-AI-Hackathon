@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowUpRight,
@@ -9,7 +10,6 @@ import {
   X,
   Menu,
 } from "lucide-react";
-import { useState } from "react";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { useJourney } from "../lib/journey";
@@ -136,7 +136,7 @@ export function Header() {
       </header>
       {pathname !== "/" && !labPage && (
         <div className="mobile-progress">
-          Step {stage + 1} of 4 <span>— {steps[stage]}</span>
+          Step {stage + 1} of 4<span>: {steps[stage]}</span>
         </div>
       )}
     </>
@@ -228,7 +228,7 @@ export function PageIntro({
 }: {
   eyebrow: string;
   title: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <div className="page-intro">

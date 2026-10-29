@@ -6,7 +6,7 @@ The **Decision Lab** extends the coach into a bounded multi-stage workflow: **Go
 
 ### Judge quick path
 
-**Without installing anything** (Node.js with native TypeScript type stripping: Node 24 as declared in `engines`, also verified on Node 22.23.4; no `npm ci`, no network, no API key):
+**Without installing anything** (Node.js with native TypeScript type stripping: Node 24 as declared in `engines`; verified on Node 24.22.1 and Node 22.23.4; no `npm ci`, no network, no API key):
 
 1. `npm run demo -- --replay monthlyContribution=900` prints the full Ana journey: stage timeline (fresh or reused, with the reason), every traced tool call, the challenger findings with severity and evidence, the v1 vs v2 strategy comparison (label, equity, buckets, projection, seeded outcome range, reach share, and the rationale sentence that names which limit bound the choice), the 16 guardrail checks, levers, the next step and a counterfactual replay showing which stages were reused or recomputed.
 2. `npm run eval` runs all 23 evaluation scenarios against the real orchestrator (exit 1 on any failure).
@@ -195,21 +195,21 @@ All scenarios are synthetic and deterministic (fixed clock 2026-01-15). Each che
 
 ### Verification status
 
-Commands below were run in the build sandbox for this revision (Node v22.23.4, global TypeScript 5.9.2) and their output inspected:
+Commands below were run in the build sandbox for this revision with global TypeScript 5.9.2 on both Node v22.23.4 (default) and Node v24.22.1 (the `engines` version), and their output inspected. Results were identical on both versions:
 
-| Command                                   | Result                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `npm run demo`                            | Ana journey printed (completed, validated-with-open-issues, 1 revision, 23 tool calls, 16 of 16 guardrail checks); exit 0 |
-| `npm run eval`                            | 23 scenarios, 23 passed, 0 failed; 350/350 assertions; exit 0                               |
-| `npm run test:core`                       | 133 tests, 133 pass, 0 fail                                                                 |
-| `npm run evidence:check`                  | both `docs/evidence` files match freshly generated output; exit 0                           |
-| `npm run typecheck:core`                  | exit 0                                                                                      |
-| `npm run check:syntax`                    | `check-syntax: 49 file(s) OK (47 src via TypeScript 5.9.2, 2 server/*.mjs via node --check).` |
-| `npm run typecheck:ui-shim`               | exit 0                                                                                      |
-| `node --check` on `server/index.mjs`, `server/agentApi.mjs`, `scripts/run-demo.mjs`, `scripts/run-eval.mjs` | exit 0 |
-| `git diff --exit-code main -- package-lock.json` | no changes; exit 0                                                                   |
+| Command                                   | Node v22.23.4                                                                               | Node v24.22.1 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------- | ------------- |
+| `npm run demo`                            | Ana journey printed (completed, validated-with-open-issues, 1 revision, 23 tool calls, 16 of 16 guardrail checks, primary `talk-to-adviser`); exit 0 | same output apart from the Node version line; exit 0 |
+| `npm run eval`                            | 23 scenarios, 23 passed, 0 failed, 0 skipped; 350/350 assertions; exit 0                    | same; exit 0 |
+| `npm run test:core`                       | 133 tests, 133 pass, 0 fail (includes the consent receipt tests in `tests/core/agentApi.test.ts` and `tests/core/orchestrator.test.ts`) | same; exit 0 |
+| `npm run evidence:check`                  | both `docs/evidence` files match freshly generated output; exit 0                           | same; exit 0 |
+| `npm run typecheck:core`                  | exit 0                                                                                      | exit 0 |
+| `npm run check:syntax`                    | `check-syntax: 49 file(s) OK (47 src via TypeScript 5.9.2, 2 server/*.mjs via node --check).` | same |
+| `npm run typecheck:ui-shim`               | exit 0 (hand-written approximations of the UI library types, see [docs/evidence/ui-static-review.md](docs/evidence/ui-static-review.md)) | exit 0 |
+| `node --check` on `server/index.mjs`, `server/agentApi.mjs`, `scripts/run-demo.mjs`, `scripts/run-eval.mjs`, `scripts/check-syntax.mjs` | exit 0 | exit 0 |
+| `git diff --exit-code main -- package-lock.json` | no changes; exit 0                                                                   | not repeated (independent of Node) |
 
-**Not run in the build sandbox:** `npm ci` failed because the npm registry returned 403 Forbidden, so `npm run typecheck` (needs React and Vite types, and the project's TypeScript 7 devDependency), `npm test` (vitest, including the Express-level `/api/agent` and `/api/consent` tests in `tests/api.test.mjs`, which were updated for consent receipts but not run), `npm run build`, `npm run test:e2e` (Playwright; no React bundle could be built) and live Bedrock calls through `/api/agent` were not executed. The React UI was not rendered in a browser. Run those commands locally after `npm ci` before relying on them. Test files under `tests/core` run under Node type stripping and are not type-checked.
+**Not run in the build sandbox:** `npm ci` failed because the npm registry returned 403 Forbidden, so `npm run typecheck` (needs React and Vite types, and the project's TypeScript 7 devDependency), `npm test` (vitest, including the Express-level `/api/agent` and `/api/consent` tests in `tests/api.test.mjs`, which were updated for consent receipts but not run), `npm run build`, `npm run test:e2e` (Playwright; no React bundle could be built) and live Bedrock calls through `/api/agent` were not executed. The React UI was not compiled against the real type packages, bundled or rendered in a browser (a Chromium binary is present in the sandbox, but there is no bundle to load); [docs/evidence/ui-static-review.md](docs/evidence/ui-static-review.md) lists what the static review covered instead. Run those commands locally after `npm ci` before relying on them. Test files under `tests/core` run under Node type stripping and are not type-checked.
 
 ### Known limitations and simulated integrations
 

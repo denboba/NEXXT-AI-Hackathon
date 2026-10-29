@@ -9,7 +9,7 @@ export function Dialog({
 }: {
   trigger: ReactNode;
   title: string;
-  description?: string;
+  description: string;
   children: ReactNode;
 }) {
   return (
@@ -21,11 +21,9 @@ export function Dialog({
           <DialogPrimitive.Title className="dialog-title">
             {title}
           </DialogPrimitive.Title>
-          {description && (
-            <DialogPrimitive.Description className="muted">
-              {description}
-            </DialogPrimitive.Description>
-          )}
+          <DialogPrimitive.Description className="muted">
+            {description}
+          </DialogPrimitive.Description>
           <div className="dialog-body">{children}</div>
           <DialogPrimitive.Close
             className="dialog-close"

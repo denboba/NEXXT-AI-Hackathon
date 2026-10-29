@@ -91,7 +91,9 @@ Blocks whose recommended minimum holding period is longer than the horizon are e
 | `maxRetries` | 1 | Retry after a timeout, malformed output or error. |
 | `maxDataAgeDays` | 120 | Staleness limit for cached market data. |
 
-Server limits for `POST /api/agent` (`server/agentApi.mjs`): input up to 8,000 characters, 60 requests per client per 60 seconds.
+Server limits for `POST /api/agent` (`server/agentApi.mjs`): input up to 8,000 characters, 60 requests per client per 60 seconds, and a valid consent receipt for scope `external-processing`.
+
+Consent receipts (`createConsentReceipts`, `server/agentApi.mjs`): valid for 30 minutes (`CONSENT_RECEIPT_TTL_MS`), revocable, audit log capped at the last 500 events (`CONSENT_AUDIT_LIMIT`, no request text or IP), `POST /api/consent` and `POST /api/consent/revoke` throttled at 30 requests per client per 60 seconds (`server/index.mjs`). The browser provider reuses a receipt until 60 seconds before it expires (`RECEIPT_REFRESH_MARGIN_MS`, `src/providers/llm.ts`). These are prototype values held in memory per server process; a pilot would bind consent to an authenticated customer and store it durably.
 
 ## What is deliberately excluded
 
