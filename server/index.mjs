@@ -9,6 +9,9 @@ import {
   AGENT_TASKS,
   AGENT_THROTTLE_LIMIT,
   AGENT_THROTTLE_WINDOW_MS,
+  CONSENT_REVOKE_THROTTLE_LIMIT,
+  CONSENT_THROTTLE_LIMIT,
+  CONSENT_THROTTLE_WINDOW_MS,
   createConsentReceipts,
   createThrottle,
   handleAgentRequest,
@@ -162,7 +165,15 @@ export function createApp({
     AGENT_THROTTLE_LIMIT,
     AGENT_THROTTLE_WINDOW_MS,
   );
-  const consentThrottle = createThrottle(30);
+  // Separate buckets: withdrawal is throttled more loosely than granting.
+  const consentThrottle = createThrottle(
+    CONSENT_THROTTLE_LIMIT,
+    CONSENT_THROTTLE_WINDOW_MS,
+  );
+  const revokeThrottle = createThrottle(
+    CONSENT_REVOKE_THROTTLE_LIMIT,
+    CONSENT_THROTTLE_WINDOW_MS,
+  );
   const clientKey = (req) => req.socket.remoteAddress || "local";
   app.post("/api/coach", async (req, res) => {
     if (!validateRequest(req.body))
@@ -208,17 +219,22 @@ export function createApp({
   // Server-issued, expiring, revocable consent receipts for external
   // processing. They record an explicit consent step; they do not
   // authenticate the user. Same 32kb JSON limit as every /api route.
-  const throttled = (req, res) =>
-    !consentThrottle(clientKey(req)) &&
-    res.status(429).json({ error: "Please wait a moment before trying again." });
   app.post("/api/consent", (req, res) => {
-    if (throttled(req, res)) return;
-    const { status, json } = handleConsentIssue({ body: req.body, receipts });
+    const { status, json } = handleConsentIssue({
+      body: req.body,
+      receipts,
+      throttle: consentThrottle,
+      clientKey: clientKey(req),
+    });
     return res.status(status).json(json);
   });
   app.post("/api/consent/revoke", (req, res) => {
-    if (throttled(req, res)) return;
-    const { status, json } = handleConsentRevoke({ body: req.body, receipts });
+    const { status, json } = handleConsentRevoke({
+      body: req.body,
+      receipts,
+      throttle: revokeThrottle,
+      clientKey: clientKey(req),
+    });
     return res.status(status).json(json);
   });
   // Structured model tasks for the Decision Lab. Requires

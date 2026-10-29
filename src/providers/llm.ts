@@ -217,10 +217,29 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
 }>;
 
 type Receipt = { receipt: string; expiresAt: number };
+/**
+ * Outcome of a withdrawal. Locally the receipt is always forgotten and the
+ * engine gate stops further external calls; `confirmed` says whether the
+ * server also acknowledged the revocation.
+ */
+export type RevokeResult =
+  | { requested: false }
+  | { requested: true; confirmed: true }
+  | { requested: true; confirmed: false; status?: number; error: string };
 export type HttpReasoningProvider = ReasoningProvider & {
-  /** Revokes the cached consent receipt on the server (best effort) and forgets it locally. */
-  revokeConsent(): Promise<void>;
+  /** Forgets the cached consent receipt locally and asks the server to revoke it. */
+  revokeConsent(): Promise<RevokeResult>;
 };
+
+/** Plain-language hint for the Decision Lab after unticking the consent box; empty when nothing needs saying. */
+export function consentWithdrawalNotice(result: RevokeResult): string {
+  if (!result.requested || result.confirmed) return "";
+  const why = result.status === 429 ? "it is busy (HTTP 429)" : result.status ? `it answered HTTP ${result.status}` : "it could not be reached";
+  return (
+    `Nothing more is sent from this page, but the server did not confirm the revocation: ${why}. ` +
+    "The receipt it issued expires on its own within 30 minutes."
+  );
+}
 
 /** Refresh a cached receipt this long before it expires. */
 export const RECEIPT_REFRESH_MARGIN_MS = 60_000;
@@ -263,11 +282,14 @@ export function httpProvider(
       throw new NonRetryableProviderError(`consent endpoint returned ${res.status} without a receipt`);
     return { receipt: body.receipt, expiresAt: body.expiresAt };
   }
-  async function revokeToken(token: string) {
+  async function revokeToken(token: string): Promise<RevokeResult> {
     try {
-      await post(`${consentEndpoint}/revoke`, { receipt: token }, new AbortController().signal);
-    } catch {
-      // Best effort: the receipt also expires on its own.
+      const res = await post(`${consentEndpoint}/revoke`, { receipt: token }, new AbortController().signal);
+      if (res.ok) return { requested: true, confirmed: true };
+      return { requested: true, confirmed: false, status: res.status, error: `revoke endpoint returned ${res.status}` };
+    } catch (e) {
+      // The receipt still expires on its own; the caller is told it was not confirmed.
+      return { requested: true, confirmed: false, error: `revoke request failed (${e instanceof Error ? e.message : String(e)})` };
     }
   }
   /** A usable receipt, and whether it was reused from the cache. */
@@ -329,7 +351,7 @@ export function httpProvider(
       cached = undefined;
       pending = undefined;
       generation++;
-      if (token) await revokeToken(token);
+      return token ? revokeToken(token) : { requested: false };
     },
   };
 }

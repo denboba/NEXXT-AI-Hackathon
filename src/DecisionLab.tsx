@@ -40,7 +40,7 @@ import { rerunWorkflow, runWorkflow } from "./orchestrator/engine.ts";
 import type { EngineOptions, WorkflowState } from "./orchestrator/engine.ts";
 import { compareVersions, rerunDelta } from "./orchestrator/view.ts";
 import type { RerunDelta, Snapshot } from "./orchestrator/view.ts";
-import { deterministicProvider, httpProvider } from "./providers/llm.ts";
+import { consentWithdrawalNotice, deterministicProvider, httpProvider } from "./providers/llm.ts";
 import type { HttpReasoningProvider } from "./providers/llm.ts";
 import {
   LOCAL_ADAPTER_LABEL,
@@ -195,6 +195,7 @@ export default function DecisionLab() {
   const [health, setHealth] = useState<Health>({ state: "checking" });
   const [provider, setProvider] = useState<"deterministic" | "bedrock">("deterministic");
   const [externalConsent, setExternalConsent] = useState(false);
+  const [withdrawalNotice, setWithdrawalNotice] = useState("");
   const [cf, setCf] = useState({ horizonYears: "", monthlyContribution: "", withdrawalAmount: "", maxLossPct: "" });
   const [consent, setConsent] = useState<ConsentState>(initialConsent());
   const [scopes, setScopes] = useState({ briefing: false, name: false });
@@ -204,6 +205,8 @@ export default function DecisionLab() {
   const captured = useRef(false);
   // One HTTP provider per page so its server-issued consent receipt is reused and can be revoked.
   const agentProvider = useRef<HttpReasoningProvider | null>(null);
+  // Ignores a late withdrawal result once the box was ticked again.
+  const consentChoice = useRef(0);
   const coachDone = journey.question >= 3;
 
   useEffect(() => {
@@ -274,8 +277,14 @@ export default function DecisionLab() {
 
   function setExternalChoice(granted: boolean) {
     setExternalConsent(granted);
-    // Withdrawal revokes the server-issued receipt; a new one is requested only on the next consented run.
-    if (!granted) void agentProvider.current?.revokeConsent();
+    setWithdrawalNotice("");
+    const choice = ++consentChoice.current;
+    // Withdrawal asks the server to revoke the receipt; a new one is requested only on the next consented run.
+    // If the server does not confirm, say so: the receipt then only lapses at its expiry.
+    if (granted) return;
+    void agentProvider.current?.revokeConsent().then((result) => {
+      if (choice === consentChoice.current) setWithdrawalNotice(consentWithdrawalNotice(result));
+    });
   }
 
   function resetHandoff() {
@@ -524,9 +533,15 @@ export default function DecisionLab() {
               <label className="lab-consent-line">
                 <input type="checkbox" checked={externalConsent} onChange={(e) => setExternalChoice(e.target.checked)} /> I agree that the
                 goal figures and optional text (no name) are sent to Amazon Bedrock through this app’s server for this assessment. Without
-                this, the deterministic provider is used and the fallback is recorded in the trace. The server records this choice as a
-                consent receipt (an id and an expiry, valid 30 minutes, no goal data); unticking the box revokes it.
+                this, the deterministic provider is used and the fallback is recorded in the trace. Ticking the box sends nothing yet: on
+                the next run with Bedrock the server records this choice as a consent receipt (an id and an expiry, valid 30 minutes, no
+                goal data). Unticking the box stops external processing from this page at once and asks the server to revoke the receipt.
               </label>
+            )}
+            {withdrawalNotice && (
+              <p className="lab-muted" role="status">
+                {withdrawalNotice}
+              </p>
             )}
           </fieldset>
           <div className="lab-form-actions lab-field-wide">

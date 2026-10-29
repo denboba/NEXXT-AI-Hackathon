@@ -10,6 +10,10 @@
 //        -> 200 { receipt, receiptId, scope, issuedAt, expiresAt }   (ms epoch)
 //        -> 400 { error }                                            anything else
 //   revoke: { receipt } -> 200 { revoked: true, receiptId } | 400 { error }
+//   both:   429 { error } when throttled. Issue and revoke use separate
+//           per-client buckets, and the revoke bucket is the looser one
+//           (CONSENT_REVOKE_THROTTLE_LIMIT > CONSENT_THROTTLE_LIMIT), so
+//           withdrawing consent is never harder than granting it.
 // A receipt is an HMAC-SHA256 signed token over its id, scope and expiry. It
 // expires after CONSENT_RECEIPT_TTL_MS and can be revoked. It proves that an
 // explicit consent step was recorded by this server; it does NOT authenticate
@@ -106,6 +110,11 @@ export function validateAgentRequest(body) {
 export const CONSENT_SCOPE_EXTERNAL_PROCESSING = "external-processing";
 export const CONSENT_RECEIPT_TTL_MS = 30 * 60 * 1000;
 export const CONSENT_AUDIT_LIMIT = 500;
+/** Rejections are kept in their own, smaller ring so they cannot evict issued/revoked events. */
+export const CONSENT_REJECTED_AUDIT_LIMIT = 100;
+export const CONSENT_THROTTLE_LIMIT = 30;
+export const CONSENT_REVOKE_THROTTLE_LIMIT = 120;
+export const CONSENT_THROTTLE_WINDOW_MS = 60000;
 const TOKEN_VERSION = "v1";
 const MAX_TOKEN_CHARS = 512;
 const ID_RE = /^[A-Za-z0-9-]{8,64}$/;
@@ -116,24 +125,34 @@ const SCOPE_RE = /^[a-z-]{1,40}$/;
  * `secret`, `now` and `newId` are injectable so tests are deterministic.
  * The audit log is bounded and holds only { event, receiptId, scope, at,
  * reason? }: never request content, input text or client addresses.
+ * `issued` and `revoked` events live in one ring (`auditLimit`) and
+ * `rejected` events in a separate ring (`rejectedAuditLimit`), so a flood
+ * of bad /api/agent requests cannot push consent events out of the log.
+ * The log is in memory and only observable through `auditLog()`, which no
+ * route exposes: it is test-observable, not an operational audit trail.
  */
 export function createConsentReceipts({
   secret = process.env.CONSENT_RECEIPT_SECRET || randomBytes(32).toString("hex"),
   now = Date.now,
   ttlMs = CONSENT_RECEIPT_TTL_MS,
   auditLimit = CONSENT_AUDIT_LIMIT,
+  rejectedAuditLimit = CONSENT_REJECTED_AUDIT_LIMIT,
   newId = randomUUID,
 } = {}) {
   if (typeof secret !== "string" || secret.length < 16)
     throw new Error("Consent receipt secret must be a string of at least 16 characters.");
   /** receiptId -> expiresAt; entries are dropped once the receipt has expired anyway. */
   const revoked = new Map();
-  const audit = [];
+  const consentEvents = [];
+  const rejections = [];
+  let seq = 0;
   const record = (event, receiptId, scope, reason) => {
     const entry = { event, receiptId, scope, at: now() };
     if (reason) entry.reason = reason;
-    audit.push(entry);
-    if (audit.length > auditLimit) audit.splice(0, audit.length - auditLimit);
+    const ring = event === "rejected" ? rejections : consentEvents;
+    const limit = event === "rejected" ? rejectedAuditLimit : auditLimit;
+    ring.push({ seq: ++seq, entry });
+    if (ring.length > limit) ring.splice(0, ring.length - limit);
   };
   const sign = (payload) => createHmac("sha256", secret).update(payload).digest("base64url");
   const pruneRevoked = (t) => {
@@ -190,8 +209,11 @@ export function createConsentReceipts({
       record("revoked", claims.receiptId, claims.scope);
       return { ok: true, receiptId: claims.receiptId };
     },
-    /** A copy of the bounded audit log, oldest first. */
-    auditLog: () => audit.map((e) => ({ ...e })),
+    /** A copy of both bounded rings merged in recording order, oldest first. */
+    auditLog: () =>
+      [...consentEvents, ...rejections]
+        .sort((a, b) => a.seq - b.seq)
+        .map(({ entry }) => ({ ...entry })),
   };
 }
 
@@ -202,8 +224,18 @@ export function hasExternalProcessingConsent(body, receipts) {
   return receipts.verify(token, CONSENT_SCOPE_EXTERNAL_PROCESSING).ok;
 }
 
-/** Pure handler for POST /api/consent. Returns `{ status, json }`. */
-export function handleConsentIssue({ body, receipts }) {
+const consentThrottled = (throttle, clientKey) =>
+  throttle && !throttle(clientKey)
+    ? { status: 429, json: { error: "Please wait a moment before trying again." } }
+    : null;
+
+/**
+ * Pure handler for POST /api/consent. Returns `{ status, json }`.
+ * `throttle(clientKey)` is optional; when given it is checked first (429).
+ */
+export function handleConsentIssue({ body, receipts, throttle, clientKey }) {
+  const limited = consentThrottled(throttle, clientKey);
+  if (limited) return limited;
   if (
     !isPlainObject(body) ||
     body.scope !== CONSENT_SCOPE_EXTERNAL_PROCESSING ||
@@ -216,8 +248,13 @@ export function handleConsentIssue({ body, receipts }) {
   return { status: 200, json: receipts.issue({ scope: CONSENT_SCOPE_EXTERNAL_PROCESSING }) };
 }
 
-/** Pure handler for POST /api/consent/revoke. Returns `{ status, json }`. */
-export function handleConsentRevoke({ body, receipts }) {
+/**
+ * Pure handler for POST /api/consent/revoke. Returns `{ status, json }`.
+ * Pass the revoke bucket (looser than the issue bucket) as `throttle`.
+ */
+export function handleConsentRevoke({ body, receipts, throttle, clientKey }) {
+  const limited = consentThrottled(throttle, clientKey);
+  if (limited) return limited;
   const result = receipts.revoke(isPlainObject(body) ? body.receipt : undefined);
   if (!result.ok) return { status: 400, json: { error: "Unknown or invalid consent receipt." } };
   return { status: 200, json: { revoked: true, receiptId: result.receiptId } };

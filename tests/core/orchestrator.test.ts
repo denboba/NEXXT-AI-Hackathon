@@ -6,7 +6,7 @@ import type { Agent } from "../../src/orchestrator/context.ts";
 import type { ChallengeReport, Strategy } from "../../src/domain/types.ts";
 import { demoProfile } from "../../src/domain/demoProfile.ts";
 import { httpProvider, replay, replayProvider } from "../../src/providers/llm.ts";
-import { failingProvider, slowProvider } from "../../src/providers/marketData.ts";
+import { cachedFixtureProvider, failingProvider, slowProvider, syntheticAssumptions } from "../../src/providers/marketData.ts";
 import { counterIds, fixedClock } from "./helpers.ts";
 
 const opts = (extra: EngineOptions = {}): EngineOptions => ({ clock: fixedClock, idFactory: counterIds(), ...extra, limits: { providerTimeoutMs: 50, ...extra.limits } });
@@ -338,4 +338,23 @@ test("trace excludes free text, labels and customer requests", async () => {
   assert.ok(!text.includes("Employer shares"));
   assert.ok(!text.includes("0700 000 000"));
   assert.ok(s.trace.every((t, i) => t.seq === i + 1 && typeof t.at === "string"));
+});
+
+test("market data without any volatility: validated with an open issue naming every class, run not blocked", async () => {
+  const { equity, bond, cash } = syntheticAssumptions("2026-02-01").assetClasses;
+  const strip = ({ expectedReturn, stressDrawdown }: { expectedReturn: number; stressDrawdown: number }) => ({ expectedReturn, stressDrawdown });
+  const noVol = cachedFixtureProvider("2026-02-01", { assetClasses: { equity: strip(equity), bond: strip(bond), cash: strip(cash) } });
+  const s = await runWorkflow(demoProfile, opts({ marketData: noVol }));
+  const full = await runWorkflow(demoProfile, opts({ marketData: cachedFixtureProvider("2026-02-01") }));
+  assert.equal(s.status, "completed");
+  assert.equal(s.stages.data.output!.assumptions.kind, "cached", "the payload is kept, not replaced by the fallback");
+  assert.deepEqual(s.stages.data.output!.flags, ["default-volatility-applied"]);
+  const range = s.result!.strategy!.outcomeRange;
+  assert.equal(range.volatilitySource, "synthetic-default");
+  assert.deepEqual(range.volatilityByClassSource, { equity: "synthetic-default", bond: "synthetic-default", cash: "synthetic-default" });
+  const issue = "Outcome range uses the synthetic default volatility for equity, bond, cash (not in the market-data payload).";
+  assert.equal(s.result!.validation!.status, "validated-with-open-issues");
+  assert.ok(s.result!.validation!.openIssues.includes(issue));
+  assert.ok(!full.result!.validation!.openIssues.includes(issue), "a complete payload raises no volatility issue");
+  assert.ok(!full.stages.data.output!.flags.includes("default-volatility-applied"));
 });

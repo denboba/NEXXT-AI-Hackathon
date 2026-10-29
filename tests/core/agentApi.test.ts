@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-ignore: plain ESM server module without type declarations
 import * as api from "../../server/agentApi.mjs";
-import { NonRetryableProviderError, httpProvider } from "../../src/providers/llm.ts";
+import { NonRetryableProviderError, consentWithdrawalNotice, httpProvider } from "../../src/providers/llm.ts";
 
 type Result = { status: number; json: Record<string, unknown> };
 type Call = { task: string; input: unknown };
@@ -288,6 +288,54 @@ test("consent receipts: audit log records issued, revoked and rejected without r
   assert.deepEqual(bounded.auditLog().map((e: { receiptId: string }) => e.receiptId), ["receipt-0003", "receipt-0004", "receipt-0005"]);
 });
 
+test("consent receipts: rejections live in their own ring and cannot evict issued or revoked events", () => {
+  const bounded = api.createConsentReceipts({ secret: SECRET, now: () => T0, auditLimit: 3, rejectedAuditLimit: 2, newId: ids() });
+  const first = bounded.issue({ scope });
+  bounded.revoke(first.receipt);
+  for (let i = 0; i < 50; i++) bounded.verify(undefined, scope);
+  bounded.issue({ scope });
+  const log = bounded.auditLog();
+  assert.deepEqual(
+    log.map((e: { event: string; receiptId: string | null }) => [e.event, e.receiptId]),
+    [["issued", "receipt-0001"], ["revoked", "receipt-0001"], ["rejected", null], ["rejected", null], ["issued", "receipt-0002"]],
+    "50 rejections keep only the last 2 and leave every consent event in place, in recording order",
+  );
+  assert.equal(api.CONSENT_REJECTED_AUDIT_LIMIT, 100);
+  assert.equal(api.CONSENT_AUDIT_LIMIT, 500);
+});
+
+test("consent routes: 429 when throttled, checked first; withdrawal has its own, looser bucket", () => {
+  resetConsent();
+  assert.ok(api.CONSENT_REVOKE_THROTTLE_LIMIT > api.CONSENT_THROTTLE_LIMIT, "withdrawing is never harder than granting");
+  let now = T0;
+  const issueBucket = api.createThrottle(2, api.CONSENT_THROTTLE_WINDOW_MS, () => now);
+  const revokeBucket = api.createThrottle(3, api.CONSENT_THROTTLE_WINDOW_MS, () => now);
+  const grant = { scope, granted: true };
+  const issue = () => api.handleConsentIssue({ body: grant, receipts, throttle: issueBucket, clientKey: "client-a" });
+  const revoke = (receipt: string) => api.handleConsentRevoke({ body: { receipt }, receipts, throttle: revokeBucket, clientKey: "client-a" });
+  const a = issue();
+  const b = issue();
+  assert.deepEqual([a.status, b.status], [200, 200]);
+  const before = receipts.auditLog().length;
+  assert.deepEqual(issue(), { status: 429, json: { error: "Please wait a moment before trying again." } });
+  assert.equal(receipts.auditLog().length, before, "a throttled grant issues nothing");
+  assert.equal(api.handleConsentIssue({ body: grant, receipts, throttle: issueBucket, clientKey: "client-b" }).status, 200, "per client");
+
+  // The grant bucket is exhausted, yet withdrawal still works.
+  assert.equal(revoke(a.json.receipt as string).status, 200);
+  assert.equal(api.hasExternalProcessingConsent({ consent: { receipt: a.json.receipt } }, receipts), false);
+  assert.equal(revoke(b.json.receipt as string).status, 200);
+  assert.equal(revoke(b.json.receipt as string).status, 200);
+  const limited = revoke(b.json.receipt as string);
+  assert.equal(limited.status, 429);
+  assert.equal(api.handleConsentRevoke({ body: { receipt: "garbage" }, receipts, throttle: revokeBucket, clientKey: "client-a" }).status, 429, "throttle before validation");
+  now = T0 + api.CONSENT_THROTTLE_WINDOW_MS;
+  assert.equal(revoke(b.json.receipt as string).status, 200, "reset after the window");
+  assert.equal(issue().status, 200);
+  // Without a throttle the handlers behave as before (used by the pure tests above).
+  assert.equal(api.handleConsentIssue({ body: grant, receipts }).status, 200);
+});
+
 // ---------- httpProvider (browser side of the consent contract) ----------
 type Sent = { url: string; body: Record<string, unknown> };
 type Reply = { status: number; json: unknown };
@@ -405,14 +453,52 @@ test("httpProvider revokeConsent revokes the cached receipt and the next task ne
     "/api/agent",
     { now: () => T0 },
   );
-  await provider.revokeConsent();
+  assert.deepEqual(await provider.revokeConsent(), { requested: false });
   assert.equal(sent.length, 0, "nothing to revoke before any receipt");
   await provider.complete("explain-strategy", strategyInput, signal());
-  await provider.revokeConsent();
+  assert.deepEqual(await provider.revokeConsent(), { requested: true, confirmed: true });
   assert.deepEqual(sent.at(-1), { url: "/api/consent/revoke", body: { receipt: "tok-1" } });
   await provider.complete("explain-strategy", strategyInput, signal());
   assert.deepEqual(sent.slice(-2).map((s) => s.url), ["/api/consent", "/api/agent"]);
   assert.equal((sent.at(-1)!.body.consent as { receipt: string }).receipt, "tok-2");
+});
+
+test("httpProvider revokeConsent reports an unconfirmed withdrawal (429, 400, offline) and still forgets the receipt", async () => {
+  const cases: [string, () => Reply | Promise<Reply>, number | undefined, RegExp][] = [
+    ["throttled", () => ({ status: 429, json: { error: "Please wait a moment before trying again." } }), 429, /busy \(HTTP 429\)/],
+    ["rejected", () => ({ status: 400, json: { error: "Unknown or invalid consent receipt." } }), 400, /answered HTTP 400/],
+    ["offline", () => Promise.reject(new Error("offline")), undefined, /could not be reached/],
+  ];
+  for (const [name, revokeRoute, status, notice] of cases) {
+    const sent: Sent[] = [];
+    let n = 0;
+    const provider = httpProvider(
+      routedFetch(
+        {
+          "/api/consent": () => issueReply(`tok-${++n}`),
+          "/api/consent/revoke": revokeRoute,
+          "/api/agent": () => ({ status: 200, json: { output } }),
+        },
+        sent,
+      ),
+      "/api/agent",
+      { now: () => T0 },
+    );
+    await provider.complete("explain-strategy", strategyInput, signal());
+    const result = await provider.revokeConsent();
+    assert.equal(result.requested && result.confirmed, false, name);
+    assert.equal(result.requested && !result.confirmed ? result.status : "n/a", status, name);
+    const text = consentWithdrawalNotice(result);
+    assert.match(text, notice, name);
+    assert.match(text, /expires on its own within 30 minutes/, name);
+    assert.ok(!text.includes("\u2014"), "no em dash");
+    // The failed withdrawal is not silently treated as success, and the old receipt is never reused.
+    await provider.complete("explain-strategy", strategyInput, signal());
+    assert.deepEqual(sent.slice(-2).map((s) => s.url), ["/api/consent", "/api/agent"], name);
+    assert.equal((sent.at(-1)!.body.consent as { receipt: string }).receipt, "tok-2", name);
+  }
+  assert.equal(consentWithdrawalNotice({ requested: true, confirmed: true }), "");
+  assert.equal(consentWithdrawalNotice({ requested: false }), "");
 });
 
 test("httpProvider and the server agree end to end: issue, use, revoke, reject", async () => {

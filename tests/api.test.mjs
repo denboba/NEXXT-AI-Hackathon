@@ -188,6 +188,19 @@ describe("agent API", () => {
     expect(calls).toBe(1);
     expect(client.receipts.auditLog().map((e) => e.event)).toEqual(["issued", "revoked", "rejected"]);
   });
+  it("throttles grants at 30 per minute but still accepts a withdrawal", async () => {
+    const client = await start({ hasKey: () => true });
+    const grant = { scope: "external-processing", granted: true };
+    let receipt;
+    for (let i = 0; i < 30; i++) {
+      const r = await client.postJson("/api/consent", grant);
+      expect(r.status).toBe(200);
+      receipt = (await r.json()).receipt;
+    }
+    expect((await client.postJson("/api/consent", grant)).status).toBe(429);
+    const revoked = await client.postJson("/api/consent/revoke", { receipt });
+    expect(revoked.status).toBe(200);
+  });
   it("validates the body before checking consent", async () => {
     const client = await start({ hasKey: () => true });
     const response = await client.postAgent({ task: "unknown-task", input: {} });
