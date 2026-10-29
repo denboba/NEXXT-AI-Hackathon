@@ -9,15 +9,21 @@ import {
   AGENT_TASKS,
   AGENT_THROTTLE_LIMIT,
   AGENT_THROTTLE_WINDOW_MS,
+  createConsentReceipts,
   createThrottle,
   handleAgentRequest,
+  handleConsentIssue,
+  handleConsentRevoke,
   parseModelJson,
 } from "./agentApi.mjs";
 
 // Re-exported so existing imports from server/index.mjs keep working.
 export {
+  createConsentReceipts,
   createThrottle,
   handleAgentRequest,
+  handleConsentIssue,
+  handleConsentRevoke,
   hasExternalProcessingConsent,
   parseModelJson,
   validateAgentRequest,
@@ -131,6 +137,7 @@ export function createApp({
   requestBedrock = bedrockReply,
   requestAgent = bedrockAgent,
   hasKey = () => Boolean(process.env.AWS_BEARER_TOKEN_BEDROCK),
+  receipts = createConsentReceipts(),
   production = false,
 } = {}) {
   const app = express();
@@ -155,6 +162,7 @@ export function createApp({
     AGENT_THROTTLE_LIMIT,
     AGENT_THROTTLE_WINDOW_MS,
   );
+  const consentThrottle = createThrottle(30);
   const clientKey = (req) => req.socket.remoteAddress || "local";
   app.post("/api/coach", async (req, res) => {
     if (!validateRequest(req.body))
@@ -197,8 +205,24 @@ export function createApp({
         });
     }
   });
+  // Server-issued, expiring, revocable consent receipts for external
+  // processing. They record an explicit consent step; they do not
+  // authenticate the user. Same 32kb JSON limit as every /api route.
+  const throttled = (req, res) =>
+    !consentThrottle(clientKey(req)) &&
+    res.status(429).json({ error: "Please wait a moment before trying again." });
+  app.post("/api/consent", (req, res) => {
+    if (throttled(req, res)) return;
+    const { status, json } = handleConsentIssue({ body: req.body, receipts });
+    return res.status(status).json(json);
+  });
+  app.post("/api/consent/revoke", (req, res) => {
+    if (throttled(req, res)) return;
+    const { status, json } = handleConsentRevoke({ body: req.body, receipts });
+    return res.status(status).json(json);
+  });
   // Structured model tasks for the Decision Lab. Requires
-  // consent: { externalProcessing: true }. No input or output logging.
+  // consent: { receipt } from POST /api/consent. No input or output logging.
   app.post("/api/agent", async (req, res) => {
     const { status, json } = await handleAgentRequest({
       body: req.body,
@@ -206,6 +230,7 @@ export function createApp({
       hasKey,
       requestAgent,
       throttle: agentThrottle,
+      receipts,
     });
     return res.status(status).json(json);
   });

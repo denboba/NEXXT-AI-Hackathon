@@ -67,15 +67,25 @@ The server retains the inherited HTTPS proxy and uses `AWS_CA_BUNDLE`, `SSL_CERT
 
 `GET /api/health` reports whether a key is configured; it does not prove live model access. `POST /api/coach` validates conversation/context and invokes Bedrock server-side. With no key, it provides a labeled deterministic educational guide. If a configured live request fails or times out, the frontend explains that it is using the guide. No conversation or credential values are logged by the server.
 
-`POST /api/agent` serves structured Decision Lab tasks (`extract-profile`, `explain-strategy`, `explain-objections`) through Bedrock. The request body is `{ "task": ..., "input": { ...whitelisted fields }, "consent": { "externalProcessing": true } }`. The handler logic lives in the dependency-free `server/agentApi.mjs` (`handleAgentRequest`, unit-tested in `tests/core/agentApi.test.ts`); `server/index.mjs` is a thin Express adapter. Checks run in this order:
+`POST /api/agent` serves structured Decision Lab tasks (`extract-profile`, `explain-strategy`, `explain-objections`) through Bedrock. The request body is `{ "task": ..., "input": { ...whitelisted fields }, "consent": { "receipt": "<token>" } }`, where the token is a consent receipt issued by this server. The handler logic lives in the dependency-free `server/agentApi.mjs` (`handleAgentRequest`, `createConsentReceipts`, `handleConsentIssue`, `handleConsentRevoke`, unit-tested in `tests/core/agentApi.test.ts`); `server/index.mjs` is a thin Express adapter.
+
+Consent receipts:
+
+- `POST /api/consent` with `{ "scope": "external-processing", "granted": true }` returns 200 `{ "receipt", "receiptId", "scope", "issuedAt", "expiresAt" }` (times in ms since epoch); any other body returns 400. The receipt is an HMAC-SHA256 signed token over its id, scope and expiry, valid for 30 minutes. The signing secret is `CONSENT_RECEIPT_SECRET` (at least 16 characters) or, if unset, a random per-process secret, so receipts do not survive a server restart.
+- `POST /api/consent/revoke` with `{ "receipt" }` revokes a correctly signed receipt (200 `{ "revoked": true, "receiptId" }`, otherwise 400). The browser calls it when the user unticks the external-processing box.
+- The server keeps a bounded in-memory audit log (last 500 events) of `issued`, `revoked` and `rejected` events with receipt id, scope, time and rejection reason only; it stores no request text, goal data or client address. Both consent routes share the 32 kb JSON limit and a 30 requests per client per minute throttle.
+
+`POST /api/agent` checks run in this order:
 
 1. 400 `{ "error": "Invalid agent request." }` for invalid, unknown or oversized (over 8,000 characters) requests.
-2. 403 `{ "error": "Consent to external processing is required.", "fallback": "deterministic" }` unless `consent.externalProcessing` is exactly `true` (checked before throttling and before any model call).
+2. 403 `{ "error": "Consent to external processing is required.", "fallback": "deterministic" }` when the receipt is missing, malformed, wrongly signed, expired, for another scope or revoked. The bare flag `consent: { "externalProcessing": true }` is no longer accepted. This check runs before throttling counts and before any model call.
 3. 429 with `fallback: "deterministic"` above 60 requests per client per minute.
 4. 503 with `fallback: "deterministic"` when no key is configured or the model fails (only an HTTP status or a generic failure is logged, never error text).
 5. 200 `{ "output": ..., "source": "bedrock" }`.
 
-Consent is enforced twice: the browser engine never calls the HTTP provider unless the user consented to external processing, and the server rejects requests that do not declare consent with the flag. The server cannot verify that a user actually consented: any caller can set the flag, so the 403 only catches callers that omit it. The consent object is never forwarded to the model. The browser re-validates every answer and falls back to deterministic rules otherwise; 400, 403 and any `fallback: "deterministic"` answer are not retried. The model never computes plan numbers.
+Consent is enforced twice: the browser engine never calls the HTTP provider unless the user ticked the external-processing box, and the server rejects requests without a valid receipt. The provider requests a receipt only on its first consented call, caches it until one minute before expiry, requests a fresh one once if a reused receipt is rejected (for example after a server restart), and falls back to deterministic rules if no receipt can be obtained; it never retries in a loop. Neither the consent object nor the receipt is forwarded to the model.
+
+**What the receipt does and does not prove.** It proves that an explicit consent step for this scope was recorded by this server, that it is recent (30 minutes) and that it was not withdrawn. It does **not** authenticate a person or prove that a human, rather than a script, asked for it: any client can still call `POST /api/consent` with `granted: true`. The audit log is in memory and lost on restart. A real deployment would bind the receipt to an authenticated session, persist the audit trail and show the consent text version that was agreed to. The browser re-validates every answer and falls back to deterministic rules otherwise; 400, 403 and any `fallback: "deterministic"` answer are not retried. The model never computes plan numbers.
 
 A live educational question was successfully answered using the configured `us-west-2` Bedrock endpoint and default Nova Lite inference profile during implementation. Live responses can still depend on key expiry, model permissions, service availability, and quotas.
 
@@ -143,7 +153,7 @@ npm run typecheck:ui-shim  # check-only UI type approximation with local shims, 
 
 Supported `--replay` keys: `monthlyContribution`, `initialCapital`, `emergencyFund`, `monthlyEssentialExpenses`, `maxAcceptableLossPct`, `targetAmount`, `horizonYears` (comma-separated `key=value` pairs). The evidence files state the exact command, the fixed clock and seed, and the Node version used; the `--check` comparison ignores only the Node version line. `tests/core/evidence.test.ts` runs both checks, so `npm run test:core` fails when the evidence drifts from the code.
 
-`tests/e2e/decision.spec.ts` adds Playwright specs for the Decision Lab, run with `npm run test:e2e`. `tests/api.test.mjs` covers the Express adapter for `/api/agent` and runs with `npm test`.
+`tests/e2e/decision.spec.ts` adds Playwright specs for the Decision Lab, run with `npm run test:e2e`. `tests/api.test.mjs` covers the Express adapter for `/api/agent`, `/api/consent` and `/api/consent/revoke` and runs with `npm test` (updated for consent receipts in this revision, not run in the build sandbox).
 
 ### Tool layer and seeded outcome range
 
@@ -191,7 +201,7 @@ Commands below were run in the build sandbox for this revision (Node v22.23.4, g
 | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `npm run demo`                            | Ana journey printed (completed, validated-with-open-issues, 1 revision, 23 tool calls, 16 of 16 guardrail checks); exit 0 |
 | `npm run eval`                            | 23 scenarios, 23 passed, 0 failed; 350/350 assertions; exit 0                               |
-| `npm run test:core`                       | 125 tests, 125 pass, 0 fail                                                                 |
+| `npm run test:core`                       | 133 tests, 133 pass, 0 fail                                                                 |
 | `npm run evidence:check`                  | both `docs/evidence` files match freshly generated output; exit 0                           |
 | `npm run typecheck:core`                  | exit 0                                                                                      |
 | `npm run check:syntax`                    | `check-syntax: 49 file(s) OK (47 src via TypeScript 5.9.2, 2 server/*.mjs via node --check).` |
@@ -199,7 +209,7 @@ Commands below were run in the build sandbox for this revision (Node v22.23.4, g
 | `node --check` on `server/index.mjs`, `server/agentApi.mjs`, `scripts/run-demo.mjs`, `scripts/run-eval.mjs` | exit 0 |
 | `git diff --exit-code main -- package-lock.json` | no changes; exit 0                                                                   |
 
-**Not run in the build sandbox:** `npm ci` failed because the npm registry returned 403 Forbidden, so `npm run typecheck` (needs React and Vite types, and the project's TypeScript 7 devDependency), `npm test` (vitest, including the Express-level `/api/agent` tests in `tests/api.test.mjs`), `npm run build`, `npm run test:e2e` (Playwright; no React bundle could be built) and live Bedrock calls through `/api/agent` were not executed. The React UI was not rendered in a browser. Run those commands locally after `npm ci` before relying on them. Test files under `tests/core` run under Node type stripping and are not type-checked.
+**Not run in the build sandbox:** `npm ci` failed because the npm registry returned 403 Forbidden, so `npm run typecheck` (needs React and Vite types, and the project's TypeScript 7 devDependency), `npm test` (vitest, including the Express-level `/api/agent` and `/api/consent` tests in `tests/api.test.mjs`, which were updated for consent receipts but not run), `npm run build`, `npm run test:e2e` (Playwright; no React bundle could be built) and live Bedrock calls through `/api/agent` were not executed. The React UI was not rendered in a browser. Run those commands locally after `npm ci` before relying on them. Test files under `tests/core` run under Node type stripping and are not type-checked.
 
 ### Known limitations and simulated integrations
 

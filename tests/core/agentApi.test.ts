@@ -10,7 +10,16 @@ import { NonRetryableProviderError, httpProvider } from "../../src/providers/llm
 type Result = { status: number; json: Record<string, unknown> };
 type Call = { task: string; input: unknown };
 
-const consent = { externalProcessing: true };
+const SECRET = "test-secret-0123456789abcdef";
+const T0 = Date.UTC(2026, 9, 29, 9, 0, 0);
+const clock = { now: T0 };
+const ids = () => {
+  let n = 0;
+  return () => `receipt-${String(++n).padStart(4, "0")}`;
+};
+const store = (secret = SECRET) => api.createConsentReceipts({ secret, now: () => clock.now, newId: ids() });
+let receipts = store();
+let consent: { receipt: string } = { receipt: receipts.issue({ scope: "external-processing" }).receipt };
 const strategyInput = {
   label: "Balanced",
   equityPct: 50,
@@ -20,7 +29,14 @@ const strategyInput = {
   gapLei: 0,
   horizonYears: 7,
 };
-const validBody = { task: "explain-strategy", input: strategyInput, consent };
+let validBody = { task: "explain-strategy", input: strategyInput, consent };
+/** Fresh store, clock and receipt for each test that needs isolation. */
+function resetConsent() {
+  clock.now = T0;
+  receipts = store();
+  consent = { receipt: receipts.issue({ scope: "external-processing" }).receipt };
+  validBody = { task: "explain-strategy", input: strategyInput, consent };
+}
 const output = { text: "An illustration, not a forecast.", citedNumbers: [] };
 
 function harness(extra: { hasKey?: boolean; requestAgent?: (task: string, input: unknown) => Promise<unknown>; throttle?: (key: string) => boolean } = {}) {
@@ -41,11 +57,13 @@ function harness(extra: { hasKey?: boolean; requestAgent?: (task: string, input:
         return extra.throttle ? extra.throttle(key) : true;
       },
       warn: (...args: unknown[]) => warnings.push(args),
+      receipts,
     });
   return { handle, calls, warnings, throttleKeys };
 }
 
 test("agent API: 403 without consent, before throttling and without calling the model", async () => {
+  resetConsent();
   const h = harness();
   const { consent: _omit, ...noConsent } = validBody;
   const r = await h.handle(noConsent);
@@ -55,17 +73,20 @@ test("agent API: 403 without consent, before throttling and without calling the 
   assert.equal(h.throttleKeys.length, 0, "a rejected request does not count against the throttle");
 });
 
-test("agent API: 403 when consent is false or not an explicit true", async () => {
+test("agent API: 403 for the bare self-declared flag and other non-receipt consent values", async () => {
+  resetConsent();
   const h = harness();
-  for (const c of [{ externalProcessing: false }, { externalProcessing: "true" }, {}, true, null, [true]]) {
+  for (const c of [{ externalProcessing: true }, { externalProcessing: false }, { externalProcessing: "true" }, {}, true, null, [true], { receipt: "" }, { receipt: 42 }]) {
     const r = await h.handle({ ...validBody, consent: c });
     assert.equal(r.status, 403, JSON.stringify(c));
     assert.equal(r.json.fallback, "deterministic");
   }
   assert.equal(h.calls.length, 0);
+  assert.equal(h.throttleKeys.length, 0);
 });
 
 test("agent API: 400 for invalid bodies comes before the consent check", async () => {
+  resetConsent();
   const h = harness();
   const invalid = [
     { task: "unknown-task", input: {}, consent },
@@ -87,14 +108,16 @@ test("agent API: 400 for invalid bodies comes before the consent check", async (
   assert.equal(h.throttleKeys.length, 0);
 });
 
-test("agent API: 200 forwards only whitelisted fields and never the consent flag", async () => {
+test("agent API: 200 forwards only whitelisted fields and never the consent receipt", async () => {
+  resetConsent();
   const h = harness();
   const range = { paths: 1000, p10Lei: 74239, p50Lei: 84778, p90Lei: 96593, reachSharePct: 28 };
   const r = await h.handle({ ...validBody, input: { ...strategyInput, ...range, extra: "not forwarded" }, extraTop: 1 });
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { output, source: "bedrock" });
   assert.deepEqual(h.calls, [{ task: "explain-strategy", input: { ...strategyInput, ...range } }]);
-  assert.ok(!JSON.stringify(h.calls).includes("externalProcessing"));
+  assert.ok(!JSON.stringify(h.calls).includes(consent.receipt), "the receipt never reaches the model");
+  assert.ok(!JSON.stringify(h.calls).includes("receipt-"), "nor does the receipt id");
 
   await h.handle({ task: "extract-profile", input: { text: "90,000 lei in 7 years", consent }, consent });
   assert.deepEqual(h.calls[1], { task: "extract-profile", input: { text: "90,000 lei in 7 years" } });
@@ -102,6 +125,7 @@ test("agent API: 200 forwards only whitelisted fields and never the consent flag
 });
 
 test("agent API: 429 after the limit with an injected clock, reset after the window", async () => {
+  resetConsent();
   let now = 1_000;
   const throttle = api.createThrottle(2, 60_000, () => now);
   const h = harness({ throttle });
@@ -119,6 +143,7 @@ test("agent API: 429 after the limit with an injected clock, reset after the win
 });
 
 test("agent API: 503 without a model key, model never called", async () => {
+  resetConsent();
   const h = harness({ hasKey: false });
   const r = await h.handle(validBody);
   assert.equal(r.status, 503);
@@ -127,6 +152,7 @@ test("agent API: 503 without a model key, model never called", async () => {
 });
 
 test("agent API: 503 on model failure without leaking the error text", async () => {
+  resetConsent();
   const h = harness({
     requestAgent: async () => {
       throw Object.assign(new Error("private upstream details"), { status: 500 });
@@ -141,6 +167,7 @@ test("agent API: 503 on model failure without leaking the error text", async () 
 });
 
 test("agent API: 503 when the model returns a non-object", async () => {
+  resetConsent();
   for (const bad of ["text", [1, 2], null, 42]) {
     const h = harness({ requestAgent: async () => bad });
     const r = await h.handle(validBody);
@@ -155,42 +182,300 @@ test("agent API: parseModelJson accepts one JSON object and rejects anything els
   assert.throws(() => api.parseModelJson("[1,2]"));
 });
 
-// ---------- httpProvider (browser side of the consent contract) ----------
-type Sent = { url: string; body: Record<string, unknown> };
-const fakeFetch = (status: number, json: unknown, sent: Sent[]) => async (url: string, init: { body: string }) => {
-  sent.push({ url, body: JSON.parse(init.body) });
-  return { ok: status >= 200 && status < 300, status, json: async () => json };
-};
+// ---------- Consent receipts ----------
+const scope = "external-processing";
 
-test("httpProvider sends consent with the task and input", async () => {
-  const sent: Sent[] = [];
-  const provider = httpProvider(fakeFetch(200, { output, source: "bedrock" }, sent));
-  const result = await provider.complete("explain-strategy", strategyInput, new AbortController().signal);
-  assert.deepEqual(result, output);
-  assert.deepEqual(sent, [{ url: "/api/agent", body: { task: "explain-strategy", input: strategyInput, consent: { externalProcessing: true } } }]);
+test("consent receipts: issue then use succeeds; the issue handler needs an explicit grant", async () => {
+  resetConsent();
+  const issued = api.handleConsentIssue({ body: { scope, granted: true }, receipts });
+  assert.equal(issued.status, 200);
+  assert.deepEqual(Object.keys(issued.json).sort(), ["expiresAt", "issuedAt", "receipt", "receiptId", "scope"]);
+  assert.equal(issued.json.scope, scope);
+  assert.equal(issued.json.issuedAt, T0);
+  assert.equal(issued.json.expiresAt, T0 + api.CONSENT_RECEIPT_TTL_MS);
+  assert.equal(api.CONSENT_RECEIPT_TTL_MS, 30 * 60 * 1000);
+  const h = harness();
+  const r = await h.handle({ ...validBody, consent: { receipt: issued.json.receipt } });
+  assert.equal(r.status, 200);
+  assert.equal(h.calls.length, 1);
+
+  for (const body of [{ scope, granted: false }, { scope, granted: "true" }, { scope: "marketing", granted: true }, { granted: true }, { externalProcessing: true }, null, "yes"]) {
+    const bad = api.handleConsentIssue({ body, receipts });
+    assert.equal(bad.status, 400, JSON.stringify(body));
+    assert.ok(!("receipt" in bad.json));
+  }
 });
 
-test("httpProvider treats 403 as non-retryable, with or without a fallback body", async () => {
-  for (const body of [{ error: "Consent to external processing is required.", fallback: "deterministic" }, {}]) {
-    const provider = httpProvider(fakeFetch(403, body, []));
-    await assert.rejects(provider.complete("explain-strategy", strategyInput, new AbortController().signal), (e: unknown) => {
-      assert.ok(e instanceof NonRetryableProviderError);
-      return true;
-    });
+test("consent receipts: expired receipts are rejected with an injected clock", async () => {
+  resetConsent();
+  const h = harness();
+  clock.now = T0 + api.CONSENT_RECEIPT_TTL_MS - 1;
+  assert.equal((await h.handle(validBody)).status, 200, "still valid one millisecond before expiry");
+  clock.now = T0 + api.CONSENT_RECEIPT_TTL_MS;
+  const r = await h.handle(validBody);
+  assert.equal(r.status, 403);
+  assert.deepEqual(r.json, { error: api.CONSENT_REQUIRED_ERROR, fallback: "deterministic" });
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.throttleKeys.length, 1, "the expired request was not counted");
+  assert.deepEqual(receipts.verify(consent.receipt, scope), { ok: false, reason: "expired" });
+});
+
+test("consent receipts: revoked receipts are rejected; revoke needs a correctly signed receipt", async () => {
+  resetConsent();
+  const h = harness();
+  assert.equal((await h.handle(validBody)).status, 200);
+  const revoked = api.handleConsentRevoke({ body: { receipt: consent.receipt }, receipts });
+  assert.deepEqual(revoked, { status: 200, json: { revoked: true, receiptId: "receipt-0001" } });
+  const r = await h.handle(validBody);
+  assert.equal(r.status, 403);
+  assert.equal(r.json.fallback, "deterministic");
+  assert.equal(h.calls.length, 1, "model not called after revocation");
+  assert.equal(h.throttleKeys.length, 1, "revoked request not counted against the throttle");
+  for (const body of [{ receipt: "v1.forged.external-processing.9999999999999.sig" }, { receipt: "" }, {}, null])
+    assert.equal(api.handleConsentRevoke({ body, receipts }).status, 400, JSON.stringify(body));
+});
+
+test("consent receipts: tampered, forged and wrong-scope receipts are rejected", async () => {
+  resetConsent();
+  const h = harness();
+  const [v, id, sc, exp, sig] = consent.receipt.split(".");
+  const flip = (c: string) => (c === "A" ? "B" : "A");
+  const other = store("another-secret-0123456789abcdef").issue({ scope }).receipt;
+  const wrongScope = receipts.issue({ scope: "briefing-content" }).receipt;
+  const cases: [string, string][] = [
+    [[v, id, sc, String(Number(exp) + 3_600_000), sig].join("."), "invalid-signature"],
+    [[v, "receipt-9999", sc, exp, sig].join("."), "invalid-signature"],
+    [[v, id, sc, exp, flip(sig[0]) + sig.slice(1)].join("."), "invalid-signature"],
+    [[v, id, sc, exp, sig.slice(0, -2)].join("."), "invalid-signature"],
+    [other, "invalid-signature"],
+    [[v, id, sc, exp].join("."), "malformed"],
+    [["v2", id, sc, exp, sig].join("."), "malformed"],
+    ["x".repeat(600), "malformed"],
+    [wrongScope, "wrong-scope"],
+  ];
+  for (const [token, reason] of cases) {
+    const r = await h.handle({ ...validBody, consent: { receipt: token } });
+    assert.equal(r.status, 403, token);
+    assert.deepEqual(receipts.verify(token, scope), { ok: false, reason }, token);
   }
-  const generic = httpProvider(fakeFetch(502, {}, []));
-  await assert.rejects(generic.complete("explain-strategy", strategyInput, new AbortController().signal), (e: unknown) => {
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.throttleKeys.length, 0);
+  assert.throws(() => api.createConsentReceipts({ secret: "short" }), /at least 16/);
+});
+
+test("consent receipts: audit log records issued, revoked and rejected without request content", async () => {
+  resetConsent();
+  const h = harness();
+  const secretText = "My name is Ana, 90,000 lei in 7 years";
+  await h.handle({ task: "extract-profile", input: { text: secretText }, consent }, "203.0.113.7");
+  await h.handle({ task: "extract-profile", input: { text: secretText }, consent: { externalProcessing: true } }, "203.0.113.7");
+  clock.now = T0 + 1000;
+  api.handleConsentRevoke({ body: { receipt: consent.receipt }, receipts });
+  clock.now = T0 + 2000;
+  await h.handle({ task: "extract-profile", input: { text: secretText }, consent }, "203.0.113.7");
+  const log = receipts.auditLog();
+  assert.deepEqual(log, [
+    { event: "issued", receiptId: "receipt-0001", scope, at: T0 },
+    { event: "rejected", receiptId: null, scope: null, at: T0, reason: "missing" },
+    { event: "revoked", receiptId: "receipt-0001", scope, at: T0 + 1000 },
+    { event: "rejected", receiptId: "receipt-0001", scope, at: T0 + 2000, reason: "revoked" },
+  ]);
+  const text = JSON.stringify(log);
+  for (const leaked of ["Ana", "90", "203.0.113.7", consent.receipt.split(".")[4]]) assert.ok(!text.includes(leaked), leaked);
+
+  const bounded = api.createConsentReceipts({ secret: SECRET, now: () => T0, auditLimit: 3, newId: ids() });
+  for (let i = 0; i < 5; i++) bounded.issue({ scope });
+  assert.deepEqual(bounded.auditLog().map((e: { receiptId: string }) => e.receiptId), ["receipt-0003", "receipt-0004", "receipt-0005"]);
+});
+
+// ---------- httpProvider (browser side of the consent contract) ----------
+type Sent = { url: string; body: Record<string, unknown> };
+type Reply = { status: number; json: unknown };
+/** Fake fetch that routes /api/consent, /api/consent/revoke and /api/agent to queues or handlers. */
+function routedFetch(routes: Record<string, (body: Record<string, unknown>) => Reply | Promise<Reply>>, sent: Sent[]) {
+  return async (url: string, init: { body: string }) => {
+    const body = JSON.parse(init.body);
+    sent.push({ url, body });
+    const route = routes[url];
+    if (!route) throw new Error(`unexpected ${url}`);
+    const { status, json } = await route(body);
+    return { ok: status >= 200 && status < 300, status, json: async () => json };
+  };
+}
+const issueReply = (receipt: string, expiresAt = T0 + 30 * 60 * 1000): Reply => ({ status: 200, json: { receipt, expiresAt } });
+const signal = () => new AbortController().signal;
+
+test("httpProvider requests a receipt once, reuses it and sends it with each task", async () => {
+  const sent: Sent[] = [];
+  const provider = httpProvider(
+    routedFetch({ "/api/consent": () => issueReply("tok-1"), "/api/agent": () => ({ status: 200, json: { output, source: "bedrock" } }) }, sent),
+    "/api/agent",
+    { now: () => T0 },
+  );
+  assert.deepEqual(await provider.complete("explain-strategy", strategyInput, signal()), output);
+  await provider.complete("explain-objections", { findings: [] }, signal());
+  assert.deepEqual(sent, [
+    { url: "/api/consent", body: { scope: "external-processing", granted: true } },
+    { url: "/api/agent", body: { task: "explain-strategy", input: strategyInput, consent: { receipt: "tok-1" } } },
+    { url: "/api/agent", body: { task: "explain-objections", input: { findings: [] }, consent: { receipt: "tok-1" } } },
+  ]);
+});
+
+test("httpProvider refreshes a receipt near expiry and re-requests once on a 403 for a reused receipt", async () => {
+  let now = T0;
+  let n = 0;
+  const sent: Sent[] = [];
+  const valid = new Set<string>();
+  const provider = httpProvider(
+    routedFetch(
+      {
+        "/api/consent": () => {
+          const token = `tok-${++n}`;
+          valid.add(token);
+          return issueReply(token, now + 30 * 60 * 1000);
+        },
+        "/api/agent": (b) =>
+          valid.has((b.consent as { receipt: string }).receipt)
+            ? { status: 200, json: { output } }
+            : { status: 403, json: { error: api.CONSENT_REQUIRED_ERROR, fallback: "deterministic" } },
+      },
+      sent,
+    ),
+    "/api/agent",
+    { now: () => now },
+  );
+  await provider.complete("explain-strategy", strategyInput, signal());
+  now = T0 + 30 * 60 * 1000 - 60_000; // inside the refresh margin
+  await provider.complete("explain-strategy", strategyInput, signal());
+  assert.deepEqual(sent.filter((s) => s.url === "/api/consent").length, 2, "refreshed before expiry");
+
+  valid.clear(); // e.g. the server restarted or revoked the receipt
+  await provider.complete("explain-strategy", strategyInput, signal());
+  assert.deepEqual(
+    sent.slice(-3).map((s) => [s.url, (s.body.consent as { receipt?: string } | undefined)?.receipt]),
+    [["/api/agent", "tok-2"], ["/api/consent", undefined], ["/api/agent", "tok-3"]],
+  );
+});
+
+test("httpProvider never loops: receipt failures and repeated 403s are non-retryable", async () => {
+  for (const consentRoute of [() => ({ status: 503, json: {} }), () => ({ status: 200, json: { nothing: true } }), () => Promise.reject(new Error("offline"))]) {
+    const sent: Sent[] = [];
+    const provider = httpProvider(routedFetch({ "/api/consent": consentRoute as () => Reply, "/api/agent": () => ({ status: 200, json: { output } }) }, sent));
+    await assert.rejects(provider.complete("explain-strategy", strategyInput, signal()), (e: unknown) => e instanceof NonRetryableProviderError);
+    assert.deepEqual(sent.map((s) => s.url), ["/api/consent"], "one receipt request, the agent is not called");
+  }
+
+  const sent: Sent[] = [];
+  let n = 0;
+  const provider = httpProvider(
+    routedFetch(
+      {
+        "/api/consent": () => issueReply(`tok-${++n}`),
+        "/api/agent": () => ({ status: 403, json: { error: api.CONSENT_REQUIRED_ERROR, fallback: "deterministic" } }),
+      },
+      sent,
+    ),
+    "/api/agent",
+    { now: () => T0 },
+  );
+  await assert.rejects(provider.complete("explain-strategy", strategyInput, signal()), (e: unknown) => e instanceof NonRetryableProviderError);
+  assert.deepEqual(sent.map((s) => s.url), ["/api/consent", "/api/agent"], "a fresh receipt rejected with 403 is not retried");
+  await assert.rejects(provider.complete("explain-strategy", strategyInput, signal()));
+  assert.deepEqual(sent.length, 4, "the rejected receipt was dropped: next task asks once more, still no loop");
+
+  const generic = httpProvider(routedFetch({ "/api/consent": () => issueReply("tok"), "/api/agent": () => ({ status: 502, json: {} }) }, []));
+  await assert.rejects(generic.complete("explain-strategy", strategyInput, signal()), (e: unknown) => {
     assert.ok(!(e instanceof NonRetryableProviderError), "generic upstream errors stay retryable");
     return true;
   });
 });
 
-test("httpProvider and the server agree: a provider request passes the server consent check", async () => {
+test("httpProvider revokeConsent revokes the cached receipt and the next task needs a new one", async () => {
   const sent: Sent[] = [];
-  const provider = httpProvider(fakeFetch(200, { output }, sent));
-  await provider.complete("explain-strategy", strategyInput, new AbortController().signal);
+  let n = 0;
+  const provider = httpProvider(
+    routedFetch(
+      {
+        "/api/consent": () => issueReply(`tok-${++n}`),
+        "/api/consent/revoke": () => ({ status: 200, json: { revoked: true } }),
+        "/api/agent": () => ({ status: 200, json: { output } }),
+      },
+      sent,
+    ),
+    "/api/agent",
+    { now: () => T0 },
+  );
+  await provider.revokeConsent();
+  assert.equal(sent.length, 0, "nothing to revoke before any receipt");
+  await provider.complete("explain-strategy", strategyInput, signal());
+  await provider.revokeConsent();
+  assert.deepEqual(sent.at(-1), { url: "/api/consent/revoke", body: { receipt: "tok-1" } });
+  await provider.complete("explain-strategy", strategyInput, signal());
+  assert.deepEqual(sent.slice(-2).map((s) => s.url), ["/api/consent", "/api/agent"]);
+  assert.equal((sent.at(-1)!.body.consent as { receipt: string }).receipt, "tok-2");
+});
+
+test("httpProvider and the server agree end to end: issue, use, revoke, reject", async () => {
+  resetConsent();
   const h = harness();
-  const r = await h.handle(sent[0].body);
-  assert.equal(r.status, 200);
-  assert.equal(api.hasExternalProcessingConsent(sent[0].body), true);
+  const sent: Sent[] = [];
+  const provider = httpProvider(
+    routedFetch(
+      {
+        "/api/consent": (body) => {
+          const r = api.handleConsentIssue({ body, receipts });
+          return { status: r.status, json: r.json };
+        },
+        "/api/consent/revoke": (body) => {
+          const r = api.handleConsentRevoke({ body, receipts });
+          return { status: r.status, json: r.json };
+        },
+        "/api/agent": async (body) => {
+          const r = await h.handle(body);
+          return { status: r.status, json: r.json };
+        },
+      },
+      sent,
+    ),
+    "/api/agent",
+    { now: () => clock.now },
+  );
+  assert.deepEqual(await provider.complete("explain-strategy", strategyInput, signal()), output);
+  assert.equal(h.calls.length, 1);
+  const used = (sent.find((s) => s.url === "/api/agent")!.body.consent as { receipt: string }).receipt;
+  assert.equal(api.hasExternalProcessingConsent({ consent: { receipt: used } }, receipts), true);
+  await provider.revokeConsent();
+  assert.equal(api.hasExternalProcessingConsent({ consent: { receipt: used } }, receipts), false, "revoked on the server");
+  assert.deepEqual(
+    receipts.auditLog().map((e: { event: string }) => e.event),
+    ["issued", "issued", "revoked", "rejected"],
+  );
+});
+
+test("httpProvider: consent withdrawn while a receipt is in flight revokes that receipt instead of using it", async () => {
+  const sent: Sent[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const provider = httpProvider(
+    routedFetch(
+      {
+        "/api/consent": async () => {
+          await gate;
+          return issueReply("late-tok");
+        },
+        "/api/consent/revoke": () => ({ status: 200, json: { revoked: true } }),
+        "/api/agent": () => ({ status: 200, json: { output } }),
+      },
+      sent,
+    ),
+    "/api/agent",
+    { now: () => T0 },
+  );
+  const call = provider.complete("explain-strategy", strategyInput, signal());
+  await provider.revokeConsent();
+  release();
+  await assert.rejects(call, (e: unknown) => e instanceof NonRetryableProviderError);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent.map((s) => s.url), ["/api/consent", "/api/consent/revoke"], "the agent is never called with the late receipt");
+  assert.deepEqual(sent[1].body, { receipt: "late-tok" });
 });

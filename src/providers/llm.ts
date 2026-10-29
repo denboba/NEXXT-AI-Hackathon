@@ -216,35 +216,120 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
   json(): Promise<unknown>;
 }>;
 
+type Receipt = { receipt: string; expiresAt: number };
+export type HttpReasoningProvider = ReasoningProvider & {
+  /** Revokes the cached consent receipt on the server (best effort) and forgets it locally. */
+  revokeConsent(): Promise<void>;
+};
+
+/** Refresh a cached receipt this long before it expires. */
+export const RECEIPT_REFRESH_MARGIN_MS = 60_000;
+
 /**
- * POSTs {task, input, consent: {externalProcessing: true}} to the app server,
- * which holds any credentials and rejects requests without that consent (403).
+ * Sends {task, input, consent: {receipt}} to the app server, which holds any
+ * credentials and rejects requests without a valid consent receipt (403).
  * The engine only calls this provider when externalProcessingConsent is true,
- * so sending the consent flag here reflects a choice the user already made.
+ * so the receipt is requested from POST /api/consent with
+ * {scope: "external-processing", granted: true} only after the user made
+ * that choice. The receipt is cached until shortly before it expires; one
+ * 403 on a reused receipt (expired or revoked server-side) triggers exactly
+ * one fresh receipt and one retry, and a rejected receipt is never reused.
+ * Any failure to obtain a receipt is non-retryable, so the engine falls back
+ * to deterministic rules for that task (at most one receipt request per task).
  */
-export function httpProvider(fetchImpl: FetchLike, endpoint = "/api/agent"): ReasoningProvider {
+export function httpProvider(
+  fetchImpl: FetchLike,
+  endpoint = "/api/agent",
+  options: { consentEndpoint?: string; now?: () => number } = {},
+): HttpReasoningProvider {
+  const consentEndpoint = options.consentEndpoint ?? "/api/consent";
+  const now = options.now ?? Date.now;
+  let cached: Receipt | undefined;
+  let pending: Promise<Receipt> | undefined;
+  let generation = 0;
+
+  const post = (url: string, body: unknown, signal: AbortSignal) =>
+    fetchImpl(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+
+  async function requestReceipt(signal: AbortSignal): Promise<Receipt> {
+    let res;
+    try {
+      res = await post(consentEndpoint, { scope: "external-processing", granted: true }, signal);
+    } catch (e) {
+      throw new NonRetryableProviderError(`consent receipt request failed (${e instanceof Error ? e.message : String(e)})`);
+    }
+    const body = res.ok ? await res.json().catch(() => undefined) : undefined;
+    if (!res.ok || !isPlainObject(body) || typeof body.receipt !== "string" || typeof body.expiresAt !== "number")
+      throw new NonRetryableProviderError(`consent endpoint returned ${res.status} without a receipt`);
+    return { receipt: body.receipt, expiresAt: body.expiresAt };
+  }
+  async function revokeToken(token: string) {
+    try {
+      await post(`${consentEndpoint}/revoke`, { receipt: token }, new AbortController().signal);
+    } catch {
+      // Best effort: the receipt also expires on its own.
+    }
+  }
+  /** A usable receipt, and whether it was reused from the cache. */
+  async function receipt(signal: AbortSignal): Promise<{ r: Receipt; reused: boolean }> {
+    if (cached && cached.expiresAt - RECEIPT_REFRESH_MARGIN_MS > now()) return { r: cached, reused: true };
+    // Concurrent tasks share one in-flight request. A revocation while it is
+    // in flight bumps the generation: the late receipt is revoked, not used.
+    const gen = generation;
+    pending ??= requestReceipt(signal).then(
+      (r) => {
+        if (gen !== generation) {
+          void revokeToken(r.receipt);
+          throw new NonRetryableProviderError("consent was withdrawn while a receipt was being issued");
+        }
+        cached = r;
+        pending = undefined;
+        return r;
+      },
+      (e) => {
+        if (gen === generation) pending = undefined;
+        throw e;
+      },
+    );
+    return { r: await pending, reused: false };
+  }
+
   return {
     id: `http:${endpoint}`,
     kind: "bedrock-via-server",
     complete: async (task, input, signal) => {
-      const res = await fetchImpl(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, input, consent: { externalProcessing: true } }),
-        signal,
-      });
+      const first = await receipt(signal);
+      let res = await post(endpoint, { task, input, consent: { receipt: first.r.receipt } }, signal);
+      if (res.status === 403) {
+        // The server rejected the receipt: never reuse it.
+        if (cached === first.r) cached = undefined;
+        if (first.reused) {
+          // A reused receipt may have expired or been revoked server-side
+          // (e.g. after a server restart): one fresh receipt, one retry.
+          const fresh = await receipt(signal);
+          res = await post(endpoint, { task, input, consent: { receipt: fresh.r.receipt } }, signal);
+          if (res.status === 403 && cached === fresh.r) cached = undefined;
+        }
+      }
       if (!res.ok) {
         const errBody = await res.json().catch(() => undefined);
-        // The server answers {fallback:"deterministic"} when consent is
-        // missing (403), no model is configured, the model is down or the
-        // caller is throttled; a 400 means the request itself is invalid.
-        // Retrying cannot help in any of these cases.
+        // The server answers {fallback:"deterministic"} when the consent
+        // receipt is not accepted (403), no model is configured, the model is
+        // down or the caller is throttled; a 400 means the request itself is
+        // invalid. Retrying cannot help in any of these cases.
         if (res.status === 400 || res.status === 403 || (isPlainObject(errBody) && errBody.fallback === "deterministic"))
           throw new NonRetryableProviderError(`agent endpoint returned ${res.status} (deterministic fallback requested)`);
         throw new Error(`agent endpoint returned ${res.status}`);
       }
       const body = await res.json();
       return isPlainObject(body) && "output" in body ? body.output : body;
+    },
+    revokeConsent: async () => {
+      const token = cached?.receipt;
+      cached = undefined;
+      pending = undefined;
+      generation++;
+      if (token) await revokeToken(token);
     },
   };
 }

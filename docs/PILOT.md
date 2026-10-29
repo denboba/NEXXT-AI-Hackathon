@@ -48,7 +48,7 @@ Metrics use only events that exist in `EVENT_NAMES` (`src/analytics/events.ts`).
 
 ## What must be built before a real pilot
 
-- **Authentication and customer data:** real login, identity, and prefilled facts from bank systems instead of typed values.
+- **Authentication and customer data:** real login, identity, and prefilled facts from bank systems instead of typed values. Consent receipts must then be bound to the authenticated session, and the consent audit trail persisted with the version of the consent text.
 - **Bank capital market assumptions and products:** replace every synthetic number in [ASSUMPTIONS.md](ASSUMPTIONS.md) with approved, versioned values and the real product range with its documents and target markets.
 - **Regulatory and legal review:** positioning relative to the bank's MiFID II suitability process, disclosures, record keeping, complaints handling and model-risk governance for the optional language model.
 - **Backend analytics:** events are currently stored only in browser `localStorage`; a pilot needs a consented, privacy-reviewed backend event store and the fallback metric above.
@@ -62,6 +62,6 @@ Metrics use only events that exist in `EVENT_NAMES` (`src/analytics/events.ts`).
 | Customers read the outcome range as a forecast or promise | Labelled "Seeded synthetic simulation, not a forecast"; banned-claims guardrail; disclosures mandatory | User testing of wording |
 | Plan released despite failed checks | 16 mandatory guardrail checks; failed checks withhold the plan; eval invariants. `simulation-reproducible` re-runs the same seeded function, so it checks input consistency, not the simulation model | Independent model validation, including of the outcome-range model |
 | Model invents facts or numbers | Model only extracts or words text; values re-validated; `narrative-numbers-match` check | Model-risk governance |
-| Personal data sent externally without consent | Engine gate plus server-side 403 for requests that do not declare `consent.externalProcessing === true` (a self-declared flag, not verified consent); sanitized trace | Data protection impact assessment |
+| Personal data sent externally without consent | Engine gate plus server-side 403 for requests without a valid server-issued consent receipt (signed, scoped, 30-minute expiry, revocable, audited in memory; not bound to an authenticated person); sanitized trace | Data protection impact assessment |
 | Advisers over-trust the briefing | Briefing lists open issues and confirmation needs | Training; the regulated assessment stays mandatory |
 | Synthetic assumptions mistaken for bank views | Every assumption labelled synthetic | Replace with bank CMA |

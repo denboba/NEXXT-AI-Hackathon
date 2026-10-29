@@ -41,6 +41,7 @@ import type { EngineOptions, WorkflowState } from "./orchestrator/engine.ts";
 import { compareVersions, rerunDelta } from "./orchestrator/view.ts";
 import type { RerunDelta, Snapshot } from "./orchestrator/view.ts";
 import { deterministicProvider, httpProvider } from "./providers/llm.ts";
+import type { HttpReasoningProvider } from "./providers/llm.ts";
 import {
   LOCAL_ADAPTER_LABEL,
   declineConsent,
@@ -201,6 +202,8 @@ export default function DecisionLab() {
   const [exportMessage, setExportMessage] = useState("");
   const started = useRef(false);
   const captured = useRef(false);
+  // One HTTP provider per page so its server-issued consent receipt is reused and can be revoked.
+  const agentProvider = useRef<HttpReasoningProvider | null>(null);
   const coachDone = journey.question >= 3;
 
   useEffect(() => {
@@ -263,8 +266,17 @@ export default function DecisionLab() {
   const bedrockSelected = provider === "bedrock" && health.state === "available";
   const engineOptions = (): EngineOptions =>
     bedrockSelected
-      ? { reasoning: httpProvider((url, init) => fetch(url, init)), externalProcessingConsent: externalConsent }
+      ? {
+          reasoning: (agentProvider.current ??= httpProvider((url, init) => fetch(url, init))),
+          externalProcessingConsent: externalConsent,
+        }
       : { reasoning: deterministicProvider() };
+
+  function setExternalChoice(granted: boolean) {
+    setExternalConsent(granted);
+    // Withdrawal revokes the server-issued receipt; a new one is requested only on the next consented run.
+    if (!granted) void agentProvider.current?.revokeConsent();
+  }
 
   function resetHandoff() {
     setConsent(initialConsent());
@@ -510,9 +522,10 @@ export default function DecisionLab() {
             {health.state === "unavailable" && <p className="lab-muted">{health.reason}</p>}
             {bedrockSelected && (
               <label className="lab-consent-line">
-                <input type="checkbox" checked={externalConsent} onChange={(e) => setExternalConsent(e.target.checked)} /> I agree that the
+                <input type="checkbox" checked={externalConsent} onChange={(e) => setExternalChoice(e.target.checked)} /> I agree that the
                 goal figures and optional text (no name) are sent to Amazon Bedrock through this app’s server for this assessment. Without
-                this, the deterministic provider is used and the fallback is recorded in the trace.
+                this, the deterministic provider is used and the fallback is recorded in the trace. The server records this choice as a
+                consent receipt (an id and an expiry, valid 30 minutes, no goal data); unticking the box revokes it.
               </label>
             )}
           </fieldset>

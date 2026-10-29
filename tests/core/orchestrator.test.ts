@@ -182,6 +182,21 @@ test("market data unavailable without fallback fails safely; slow data falls bac
   assert.ok(slow.trace.some((t) => t.event === "fallback" && t.stage === "data"));
 });
 
+// Fetch stand-in for httpProvider: POST /api/consent issues a receipt, every
+// other URL goes to `agent`. Counts consent requests separately.
+type AgentReply = { ok: boolean; status: number; json(): Promise<unknown> };
+function withReceipts(agent: (url: string) => Promise<AgentReply>) {
+  const counts = { consent: 0 };
+  const fetchImpl = async (url: string) => {
+    if (url === "/api/consent") {
+      counts.consent++;
+      return { ok: true, status: 200, json: async () => ({ receipt: `v1.receipt-${counts.consent}`, expiresAt: Number.MAX_SAFE_INTEGER }) };
+    }
+    return agent(url);
+  };
+  return { fetchImpl, counts };
+}
+
 test("external provider is not called without consent", async () => {
   const calls: string[] = [];
   const provider = httpProvider(async (url) => {
@@ -196,37 +211,43 @@ test("external provider is not called without consent", async () => {
 
 test("server 503 {fallback:'deterministic'} falls back immediately without retries", async () => {
   let calls = 0;
-  const provider = httpProvider(async () => {
+  const unconfigured = withReceipts(async () => {
     calls++;
     return { ok: false, status: 503, json: async () => ({ error: "No model is configured on this server.", fallback: "deterministic" }) };
   });
+  const provider = httpProvider(unconfigured.fetchImpl);
   const s = await runWorkflow(demoProfile, opts({ reasoning: provider, externalProcessingConsent: true, limits: { maxRetries: 2 } }));
   assert.equal(s.status, "completed");
   assert.equal(s.trace.filter((t) => t.event === "retry").length, 0);
   // one call per model task, no retries
   assert.equal(calls, s.modelCalls);
+  assert.equal(unconfigured.counts.consent, 1, "one receipt is issued and reused for every task");
   assert.ok(s.trace.some((t) => t.event === "fallback" && t.summary.includes("deterministic fallback requested")));
 
   let generic = 0;
-  const flaky = httpProvider(async () => {
-    generic++;
-    return { ok: false, status: 502, json: async () => ({}) };
-  });
+  const flaky = httpProvider(
+    withReceipts(async () => {
+      generic++;
+      return { ok: false, status: 502, json: async () => ({}) };
+    }).fetchImpl,
+  );
   const f = await runWorkflow(demoProfile, opts({ reasoning: flaky, externalProcessingConsent: true, limits: { maxRetries: 2 } }));
   assert.ok(f.trace.some((t) => t.event === "retry"), "generic HTTP errors are still retried");
   assert.ok(generic > calls);
 });
 
-test("server 403 (consent rejected) falls back immediately without retries", async () => {
+test("server 403 (receipt rejected) falls back immediately without retries", async () => {
   let calls = 0;
-  const provider = httpProvider(async () => {
+  const rejecting = withReceipts(async () => {
     calls++;
     return { ok: false, status: 403, json: async () => ({ error: "Consent to external processing is required.", fallback: "deterministic" }) };
   });
+  const provider = httpProvider(rejecting.fetchImpl);
   const s = await runWorkflow(demoProfile, opts({ reasoning: provider, externalProcessingConsent: true, limits: { maxRetries: 2 } }));
   assert.equal(s.status, "completed");
   assert.equal(s.trace.filter((t) => t.event === "retry").length, 0);
   assert.equal(calls, s.modelCalls);
+  assert.equal(rejecting.counts.consent, s.modelCalls, "a rejected receipt is never reused; one fresh receipt per task, no loop");
   assert.ok(s.trace.some((t) => t.event === "fallback" && t.summary.includes("returned 403")));
 });
 

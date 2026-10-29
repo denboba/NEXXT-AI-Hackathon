@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createApp } from "../server/index.mjs";
+import { createApp, createConsentReceipts } from "../server/index.mjs";
 const servers = [];
 afterEach(async () => {
   await Promise.all(
@@ -12,8 +12,10 @@ const request = {
   messages: [{ role: "user", text: "Could I lose money?" }],
   context: { monthly: 500, years: 10, risk: "balanced" },
 };
+const SECRET = "vitest-secret-0123456789abcdef";
 async function start(options) {
-  const server = createApp(options).listen(0, "127.0.0.1");
+  const receipts = createConsentReceipts({ secret: SECRET });
+  const server = createApp({ receipts, ...options }).listen(0, "127.0.0.1");
   servers.push(server);
   await new Promise((resolve) => server.once("listening", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -25,12 +27,31 @@ async function start(options) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
-    postAgent: (body) =>
-      fetch(url + "/api/agent", {
+    postJson: (route, body) =>
+      fetch(url + route, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
+    receipts,
+    // Posts an agent request; unless the body brings its own consent, a fresh
+    // server-issued receipt is requested first and attached.
+    postAgent: async (body) => {
+      let payload = body;
+      if (body && typeof body === "object" && !("consent" in body)) {
+        const issued = await fetch(url + "/api/consent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "external-processing", granted: true }),
+        }).then((r) => r.json());
+        payload = { ...body, consent: { receipt: issued.receipt } };
+      }
+      return fetch(url + "/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    },
   };
 }
 describe("coach API", () => {
@@ -116,16 +137,17 @@ const agentRequest = {
     gapLei: 0,
     horizonYears: 7,
   },
-  consent: { externalProcessing: true },
 };
-// What the model receives: the whitelisted task and input, never the consent flag.
+// What the model receives: the whitelisted task and input, never the consent receipt.
 const forwardedAgentCall = { task: agentRequest.task, input: agentRequest.input };
 describe("agent API", () => {
   it.each([
     { consent: undefined },
+    { consent: { externalProcessing: true } },
     { consent: { externalProcessing: false } },
     { consent: { externalProcessing: "true" } },
-  ])("rejects requests without consent to external processing with 403", async ({ consent }) => {
+    { consent: { receipt: "v1.forged.external-processing.9999999999999.sig" } },
+  ])("rejects requests without a valid consent receipt with 403", async ({ consent }) => {
     const client = await start({
       hasKey: () => true,
       requestAgent: () => {
@@ -138,6 +160,33 @@ describe("agent API", () => {
       error: "Consent to external processing is required.",
       fallback: "deterministic",
     });
+  });
+  it("issues, accepts and revokes consent receipts", async () => {
+    let calls = 0;
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: async () => {
+        calls++;
+        return { text: "An illustration, not a forecast.", citedNumbers: [] };
+      },
+    });
+    const refused = await client.postJson("/api/consent", { scope: "external-processing", granted: false });
+    expect(refused.status).toBe(400);
+    const issued = await client.postJson("/api/consent", { scope: "external-processing", granted: true });
+    expect(issued.status).toBe(200);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    const { receipt, scope, expiresAt, issuedAt } = await issued.json();
+    expect(scope).toBe("external-processing");
+    expect(expiresAt - issuedAt).toBe(30 * 60 * 1000);
+    const ok = await client.postAgent({ ...agentRequest, consent: { receipt } });
+    expect(ok.status).toBe(200);
+    const revoked = await client.postJson("/api/consent/revoke", { receipt });
+    expect(revoked.status).toBe(200);
+    const after = await client.postAgent({ ...agentRequest, consent: { receipt } });
+    expect(after.status).toBe(403);
+    expect((await after.json()).fallback).toBe("deterministic");
+    expect(calls).toBe(1);
+    expect(client.receipts.auditLog().map((e) => e.event)).toEqual(["issued", "revoked", "rejected"]);
   });
   it("validates the body before checking consent", async () => {
     const client = await start({ hasKey: () => true });
