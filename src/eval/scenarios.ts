@@ -10,7 +10,9 @@ import { catalogue } from "../domain/catalogue.ts";
 import { blendedAssumptions } from "../domain/calculations.ts";
 import { replay } from "../providers/llm.ts";
 import type { ReplayFixtures } from "../providers/llm.ts";
-import { strategyAgent, projectSleeve, gapFor } from "../agents/strategy.ts";
+import { strategyAgent, projectSleeve, gapFor, outcomeRangeOf } from "../agents/strategy.ts";
+import { simulateGoal } from "../domain/simulation.ts";
+import type { SimulationInput } from "../domain/simulation.ts";
 import { bannedClaims } from "../agents/guardrail.ts";
 import { SAFETY_MESSAGES } from "../agents/nextStep.ts";
 import type { Agent, Limits, StageId } from "../orchestrator/context.ts";
@@ -42,7 +44,9 @@ export type ScenarioCategory =
   | "privacy-consent"
   | "concentration-risk"
   | "loop-limit"
-  | "input-validation";
+  | "input-validation"
+  | "seeded-simulation"
+  | "tool-budget";
 
 export type ReasoningSpec =
   | { kind: "deterministic" }
@@ -828,6 +832,91 @@ export const SCENARIOS: Scenario[] = [
       }),
     ],
   },
+  {
+    id: "seeded-range-determinism",
+    title: "The seeded outcome range is reproducible; another seed changes the paths but keeps percentiles ordered",
+    category: "seeded-simulation",
+    covers: "extra",
+    synthetic: true,
+    input: demoProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated-with-open-issues",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("same-seed-identical", "Re-simulating the released strategy with its seed and path count gives a byte-identical outcome range", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const again = outcomeRangeOf(simulateGoal({ ...args, seed: s.outcomeRange.seed, paths: s.outcomeRange.paths }));
+        const same = JSON.stringify(again) === JSON.stringify(s.outcomeRange);
+        const check2 = run.result?.validation?.checks.find((c) => c.id === "simulation-reproducible");
+        return check(same && check2?.pass === true, `identical ${same}; guardrail simulation-reproducible ${check2?.pass}; p50 ${Math.round(s.outcomeRange.p50)} lei, seed ${s.outcomeRange.seed}`);
+      }),
+      assertion("other-seed-ordered", "A different seed changes the simulated paths, while p10 <= p50 <= p90 and 0 <= reach share <= 1 still hold", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const other = simulateGoal({ ...args, seed: s.outcomeRange.seed + 1, paths: s.outcomeRange.paths });
+        const changed = other.p10 !== s.outcomeRange.p10 || other.p50 !== s.outcomeRange.p50 || other.p90 !== s.outcomeRange.p90;
+        const ordered = other.p10 <= other.p50 && other.p50 <= other.p90 && other.reachShare >= 0 && other.reachShare <= 1;
+        return check(changed && ordered, `seed ${other.seed}: p10 ${Math.round(other.p10)}, p50 ${Math.round(other.p50)}, p90 ${Math.round(other.p90)} lei, reach ${pct(other.reachShare)} (changed ${changed})`);
+      }),
+      assertion("tool-events-traced", "Strategy, challenger and guardrail call the simulation through the traced tool layer", (run) => {
+        const stages = new Set(run.trace.filter((t) => t.event === "tool" && t.data?.tool === "simulate-outcomes").map((t) => t.stage));
+        const counted = run.trace.filter((t) => t.event === "tool").length === run.toolCalls;
+        return check(["strategy", "challenger", "guardrail"].every((id) => stages.has(id as StageId)) && counted, `simulate-outcomes called by [${[...stages].join(", ")}]; ${run.toolCalls} tool calls traced ${counted}`);
+      }),
+    ],
+  },
+  {
+    id: "tool-budget-exceeded",
+    title: "A tiny tool-call budget stops the run with an explicit reason; nothing is validated",
+    category: "tool-budget",
+    covers: "7, extra",
+    synthetic: true,
+    input: normalProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    options: { limits: { maxToolCalls: 3 } },
+    expected: {
+      terminalStatus: "failed",
+      mustVisitStages: ["profile", "data", "suitability", "strategy"],
+      mustSkipStages: ["challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("explicit-budget-reason", "The terminal failure names the tool budget; the limit is recorded in the trace", (run) =>
+        check(
+          JSON.stringify(run.result?.unresolved) === JSON.stringify(["tool-budget-exceeded"]) && traceHas(run, (t) => t.event === "error" && t.summary.includes("tool-call limit (3) reached")),
+          `unresolved ${JSON.stringify(run.result?.unresolved)}`,
+        ),
+      ),
+      assertion("never-validated", "No strategy is released and no validation report says validated", (run) =>
+        check(!run.result?.strategy && run.result?.validation === undefined && run.toolCalls <= 3, `released ${!!run.result?.strategy}, validation ${run.result?.validation?.status ?? "not-run"}, tool calls ${run.toolCalls}/3`),
+      ),
+    ],
+  },
 ];
+
+/** Simulation inputs of a strategy, rebuilt from the recorded stage outputs. */
+function simulationArgsOf(run: WorkflowState, s: Strategy): Omit<SimulationInput, "seed" | "paths"> | undefined {
+  const d = dataOf(run);
+  const suit = suitabilityOf(run);
+  if (!d || !suit) return undefined;
+  const blend = blendedAssumptions(s.weights, catalogue, d.assumptions);
+  return {
+    initial: s.investedInitialLei,
+    monthly: s.monthlyContributionLei,
+    years: s.horizonYears,
+    assetMix: blend.assetMix,
+    assumptions: d.assumptions,
+    fee: blend.fee,
+    inflation: d.assumptions.inflation,
+    withdrawals: suit.laterWithdrawals.map((w) => ({ amount: w.amountLei, inYears: w.inYears })),
+    target: s.targetLei,
+    targetIsReal: s.outcomeRange.targetIsReal,
+  };
+}
 
 export const scenarioById = (id: string) => SCENARIOS.find((s) => s.id === id);

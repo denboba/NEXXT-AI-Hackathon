@@ -5477,6 +5477,11 @@ h3 {
 .lab-strategy .lab-facts > div {
   grid-template-columns: minmax(110px, 42%) 1fr;
 }
+.lab-outcome-range {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
 .lab-strategy-empty {
   display: flex;
   flex-direction: column;

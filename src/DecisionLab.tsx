@@ -342,9 +342,10 @@ export default function DecisionLab() {
 
   function tryLever(lever: Lever) {
     if (!run || lever.value === undefined) return;
-    if (lever.id === "increase-contribution" && run.input.monthlyContribution !== undefined)
+    // Solver levers carry the same units as the base-case levers (extra lei/month, extra years).
+    if ((lever.id === "increase-contribution" || lever.id === "contribution-for-reach-share") && run.input.monthlyContribution !== undefined)
       replay({ monthlyContribution: Math.round(run.input.monthlyContribution + lever.value) });
-    else if (lever.id === "extend-horizon" && run.input.goal?.horizonYears !== undefined)
+    else if ((lever.id === "extend-horizon" || lever.id === "horizon-for-reach-share") && run.input.goal?.horizonYears !== undefined)
       replay({ goal: { ...run.input.goal, horizonYears: run.input.goal.horizonYears + lever.value } });
     else if (lever.id === "lower-target" && run.input.goal) replay({ goal: { ...run.input.goal, targetAmount: lever.value } });
   }
@@ -546,7 +547,7 @@ export default function DecisionLab() {
             </ol>
             <p className="lab-provider-badge">
               Provider: <strong>{run.providers.reasoning}</strong> · market data: <strong>{run.providers.marketData}</strong> · model calls{" "}
-              {run.modelCalls} · fallbacks {run.fallbacks} · steps {run.steps}
+              {run.modelCalls} · tool calls {run.toolCalls}/{run.limits.maxToolCalls} · fallbacks {run.fallbacks} · steps {run.steps}
               {run.fallbacks > 0 && " (a fallback to deterministic rules happened; see the trace)"}
             </p>
             {run.status === "needs-clarification" && profile && (
@@ -780,7 +781,7 @@ export default function DecisionLab() {
               {nextStep.scenarioSuggestions.length > 0 && (
                 <ul className="lab-levers">
                   {nextStep.scenarioSuggestions.map((l) => (
-                    <li key={l.id}>
+                    <li key={`${l.id}-${l.reachShare ?? "base"}`}>
                       <span>{l.description}</span>
                       {l.value !== undefined && l.id !== "review-concentration" && (
                         <button type="button" className="text-button" disabled={busy} onClick={() => tryLever(l)}>
@@ -911,8 +912,10 @@ const SNAPSHOT_ROWS: { key: keyof Snapshot; label: string; format: (s: Snapshot)
   { key: "projectedLei", label: "Projected value (hypothetical)", format: (s) => leiOrDash(s.projectedLei) },
   { key: "gapLei", label: "Gap to target", format: (s) => leiOrDash(s.gapLei) },
   { key: "stressLossPct", label: "Severe-crash loss", format: (s) => pctOrDash(s.stressLossPct) },
+  { key: "reachShare", label: "Seeded paths reaching the target (synthetic)", format: (s) => pctOrDash(s.reachShare) },
   { key: "revisions", label: "Revisions", format: (s) => String(s.revisions) },
   { key: "modelCalls", label: "Model calls", format: (s) => String(s.modelCalls) },
+  { key: "toolCalls", label: "Tool calls", format: (s) => String(s.toolCalls) },
 ];
 
 function fieldValue(input: IntakeInput, field: string): string {

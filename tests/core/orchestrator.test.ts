@@ -217,6 +217,83 @@ test("server 503 {fallback:'deterministic'} falls back immediately without retri
   assert.ok(generic > calls);
 });
 
+test("tool layer: calls are counted, traced with numbers only, and identical across runs", async () => {
+  const input = { ...demoProfile, customerRequests: ["Please call me at 0700 000 000"] };
+  const a = await runWorkflow(input, opts());
+  const b = await runWorkflow(input, opts());
+  const tools = a.trace.filter((t) => t.event === "tool");
+  assert.equal(tools.length, a.toolCalls);
+  assert.ok(a.toolCalls > 0 && a.toolCalls <= a.limits.maxToolCalls, `${a.toolCalls}/${a.limits.maxToolCalls}`);
+  assert.ok(a.toolCalls <= a.limits.maxToolCalls / 2, "the demo stays well below the default tool budget");
+  const byStage = new Set(tools.map((t) => `${t.stage}:${String(t.data?.tool)}`));
+  for (const k of ["strategy:project-goal", "strategy:stress-loss", "strategy:simulate-outcomes", "strategy:solve-levers", "challenger:project-goal", "challenger:simulate-outcomes", "guardrail:simulate-outcomes"])
+    assert.ok(byStage.has(k), k);
+  for (const t of tools) {
+    for (const part of ["args", "result"] as const) {
+      const values = Object.values((t.data?.[part] ?? {}) as Record<string, unknown>);
+      assert.ok(values.length > 0 && values.every((v) => typeof v === "number"), `${t.summary}: ${part} must be numbers only`);
+    }
+    assert.equal(typeof t.data?.durationMs, "number");
+  }
+  const text = JSON.stringify(tools);
+  for (const secret of [demoProfile.freeText!, "Wedding", "Employer shares", "0700 000 000", "Apartment down payment"]) assert.ok(!text.includes(secret), secret);
+  // Byte-identical outcome ranges (and traces) for the same input and seed.
+  assert.equal(JSON.stringify(a.result!.strategy!.outcomeRange), JSON.stringify(b.result!.strategy!.outcomeRange));
+  assert.deepEqual(a.trace, b.trace);
+  assert.equal(a.toolCalls, b.toolCalls);
+  // Reused stages make no tool calls.
+  const same = await rerunWorkflow(a, {}, opts());
+  assert.equal(same.toolCalls, 0);
+});
+
+test("tool layer: exceeding maxToolCalls fails the stage explicitly and releases nothing", async () => {
+  for (const maxToolCalls of [0, 5, 12]) {
+    const s = await runWorkflow(demoProfile, opts({ limits: { maxToolCalls } }));
+    assert.equal(s.status, "failed", `maxToolCalls ${maxToolCalls}`);
+    assert.deepEqual(s.result!.unresolved, ["tool-budget-exceeded"]);
+    assert.equal(s.result!.strategy, undefined);
+    assert.notEqual(s.result!.validation?.status, "validated");
+    assert.ok(s.toolCalls <= maxToolCalls);
+    assert.ok(s.trace.some((t) => t.event === "error" && t.summary.includes(`tool-call limit (${maxToolCalls}) reached`)));
+  }
+});
+
+test("demo: revised strategy is labelled by its equity share and carries a seeded outcome range", async () => {
+  const s = await runWorkflow(demoProfile, opts());
+  const [first, revised] = strategies(s);
+  assert.equal(first.label, "Balanced");
+  assert.ok(Math.abs(revised.equityShare - 0.257) < 1e-9);
+  assert.equal(revised.label, "Cautious", "25.7% equity is no longer called Balanced");
+  for (const st of [first, revised]) {
+    const o = st.outcomeRange;
+    assert.ok(o.p10 <= o.p50 && o.p50 <= o.p90);
+    assert.ok(o.reachShare >= 0 && o.reachShare <= 1);
+    assert.equal(o.paths, 1000);
+  }
+  assert.ok(revised.outcomeRange.reachShare < first.outcomeRange.reachShare);
+  const solver = revised.levers.filter((l) => l.reachShare !== undefined);
+  assert.ok(solver.some((l) => l.id === "contribution-for-reach-share" && l.reachShare === 0.75 && /75% across 1,000 seeded synthetic paths/.test(l.description)));
+  assert.ok(solver.some((l) => l.id === "horizon-for-reach-share"));
+  assert.ok(s.result!.validation!.checks.some((c) => c.id === "simulation-reproducible" && c.pass));
+  assert.ok(/1,000 seeded synthetic paths/.test(s.result!.strategy!.narrative.text));
+});
+
+test("challenger low-reach finding is acknowledged up front and costs no extra revision", async () => {
+  // At 750 lei/month the revised base case reaches 90,000 lei but fewer than half of the seeded paths do.
+  const s = await runWorkflow({ ...demoProfile, monthlyContribution: 750 }, opts());
+  const strategy = s.result!.strategy!;
+  assert.equal(s.status, "completed");
+  assert.equal(s.revisions, 1);
+  assert.equal(strategy.gapLei, 0);
+  assert.ok(strategy.outcomeRange.reachShare < 0.5);
+  const finding = s.result!.challenge!.findings.find((f) => f.id === "outcome-range-low-reach");
+  assert.equal(finding?.severity, "material");
+  assert.equal(finding?.routeTo, "strategy");
+  assert.ok(strategy.acknowledgedFindings.includes("outcome-range-low-reach"));
+  assert.ok(s.result!.validation!.openIssues.some((i) => i.includes("seeded synthetic paths")));
+  assert.equal(s.result!.validation!.status, "validated-with-open-issues");
+});
+
 test("trace excludes free text, labels and customer requests", async () => {
   const input = { ...demoProfile, customerRequests: ["Please call me at 0700 000 000"] };
   const s = await runWorkflow(input, opts());

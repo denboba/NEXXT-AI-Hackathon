@@ -1,6 +1,7 @@
 // Test helpers: a minimal StageContext that calls a provider directly.
 import type { StageContext } from "../../src/orchestrator/context.ts";
 import { DEFAULT_LIMITS } from "../../src/orchestrator/context.ts";
+import { runTool } from "../../src/orchestrator/tools.ts";
 import { deterministicProvider } from "../../src/providers/llm.ts";
 import type { ReasoningProvider } from "../../src/providers/llm.ts";
 import { syntheticFixtureProvider } from "../../src/providers/marketData.ts";
@@ -28,6 +29,8 @@ export function makeContext(input: IntakeInput, overrides: Partial<StageContext>
       if (!parsed.ok) throw new Error(parsed.error);
       return { value: parsed.value, providerId: provider.id, fallback: false };
     },
+    // Same deterministic tools as the engine, without budget or trace.
+    callTool: (name, args) => runTool(name, args),
     withTimeout: (fn) => fn(new AbortController().signal),
     ...overrides,
   };

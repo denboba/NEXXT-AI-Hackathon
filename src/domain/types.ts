@@ -88,13 +88,24 @@ export type CustomerProfile = {
 
 // ---------- Market data ----------
 export type MarketDataKind = "synthetic-fixture" | "cached" | "live";
-export type AssetClassAssumption = { expectedReturn: number; stressDrawdown: number };
+export type AssetClassAssumption = {
+  expectedReturn: number;
+  stressDrawdown: number;
+  /**
+   * Annual standard deviation of returns (decimal), used only by the seeded
+   * outcome simulation. Optional in a payload; validated when present. When
+   * absent the simulation uses labelled synthetic defaults (simulation.ts).
+   */
+  volatility?: number;
+};
 export type CapitalMarketAssumptions = {
   /** ISO date (YYYY-MM-DD). */
   asOf: string;
   kind: MarketDataKind;
   sourceLabel: string;
   assetClasses: Record<AssetClass, AssetClassAssumption>;
+  /** Correlation between equity and bond returns (-1..1); cash is treated as uncorrelated. Optional, validated when present. */
+  equityBondCorrelation?: number;
   inflation: number;
   units: "decimal-per-year";
 };
@@ -165,10 +176,45 @@ export type LiquidityBucket = {
 };
 
 export type Lever = {
-  id: "increase-contribution" | "extend-horizon" | "lower-target" | "review-concentration";
+  id:
+    | "increase-contribution"
+    | "extend-horizon"
+    | "lower-target"
+    | "review-concentration"
+    /** From the seeded goal-seek solver: extra lei/month for a target reach share. */
+    | "contribution-for-reach-share"
+    /** From the seeded goal-seek solver: extra years for a target reach share. */
+    | "horizon-for-reach-share";
   description: string;
   value?: number;
   unit?: "lei-per-month" | "years" | "lei";
+  /** Target reach share (0..1) a solver lever was computed for. */
+  reachShare?: number;
+};
+
+/**
+ * Range of outcomes from the seeded synthetic simulation (simulation.ts).
+ * Not a forecast: the volatility inputs are illustrative planning assumptions.
+ */
+export type OutcomeRange = {
+  seed: number;
+  paths: number;
+  /** Nominal value at the goal date, lei (10th / 50th / 90th percentile of paths). */
+  p10: number;
+  p50: number;
+  p90: number;
+  /** The same percentiles in today's money. */
+  p10Real: number;
+  p50Real: number;
+  p90Real: number;
+  /** Share of paths (0..1) whose value reaches the target (real when the target is in today's money). */
+  reachShare: number;
+  targetIsReal: boolean;
+  /** Largest peak-to-trough fall of the portfolio's unit value on any path (decimal). */
+  worstPathMaxDrawdown: number;
+  /** Annual portfolio volatility used (decimal) and where the inputs came from. */
+  portfolioVolatility: number;
+  volatilitySource: "market-data-payload" | "synthetic-default";
 };
 
 export type ProjectionSummary = {
@@ -208,6 +254,8 @@ export type Strategy = {
   assumptions: string[];
   projection: ProjectionSummary;
   gapLei: number;
+  /** Seeded synthetic outcome range of the chosen candidate (simulate-outcomes tool). */
+  outcomeRange: OutcomeRange;
   levers: Lever[];
   candidates: StrategyCandidate[];
   rationale: string;

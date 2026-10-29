@@ -20,6 +20,9 @@ export const SYNTHETIC_LABEL = "Synthetic planning assumptions - not market data
  * 8.4%). Planning stress drawdowns describe a bad-but-not-extreme year
  * (equity -20%, bonds -5%); the Challenger applies its own, harsher scenario.
  * Inflation matches INFLATION (5.5%) from finance.ts.
+ * Volatility (annual standard deviation: equity 16%, bonds 5%, cash 0.5%) and
+ * the equity/bond correlation (0.2) are illustrative planning assumptions for
+ * the seeded outcome simulation, not estimates from market data.
  */
 export function syntheticAssumptions(asOf = "2026-01-01"): CapitalMarketAssumptions {
   return {
@@ -27,10 +30,11 @@ export function syntheticAssumptions(asOf = "2026-01-01"): CapitalMarketAssumpti
     kind: "synthetic-fixture",
     sourceLabel: SYNTHETIC_LABEL,
     assetClasses: {
-      equity: { expectedReturn: 0.09, stressDrawdown: 0.2 },
-      bond: { expectedReturn: 0.03, stressDrawdown: 0.05 },
-      cash: { expectedReturn: 0.025, stressDrawdown: 0 },
+      equity: { expectedReturn: 0.09, stressDrawdown: 0.2, volatility: 0.16 },
+      bond: { expectedReturn: 0.03, stressDrawdown: 0.05, volatility: 0.05 },
+      cash: { expectedReturn: 0.025, stressDrawdown: 0, volatility: 0.005 },
     },
+    equityBondCorrelation: 0.2,
     inflation: INFLATION,
     units: "decimal-per-year",
   };
@@ -108,6 +112,10 @@ export function validateAssumptions(raw: unknown): { ok: true; value: CapitalMar
     const c = (a.assetClasses as Record<string, unknown>)[cls];
     if (!isPlainObject(c) || !inRange(c.expectedReturn, -0.5, 0.5) || !inRange(c.stressDrawdown, 0, 1))
       return { ok: false, error: `assetClasses.${cls} invalid` };
+    // Optional, but when present it must be a plausible annual standard deviation.
+    if (c.volatility !== undefined && !inRange(c.volatility, 0, 1)) return { ok: false, error: `assetClasses.${cls}.volatility invalid` };
   }
+  if (a.equityBondCorrelation !== undefined && !inRange(a.equityBondCorrelation, -1, 1))
+    return { ok: false, error: "equityBondCorrelation must be within -1..1" };
   return { ok: true, value: raw as CapitalMarketAssumptions };
 }

@@ -36,6 +36,8 @@ test("catalogue covers the required cases with unique ids", () => {
     "privacy-consent",
     "concentration-risk",
     "loop-limit",
+    "seeded-range-determinism",
+    "tool-budget-exceeded",
   ])
     assert.ok(scenarioById(id), `missing scenario ${id}`);
   assert.ok(SCENARIOS.every((s) => s.synthetic === true && s.assertions.length > 0));

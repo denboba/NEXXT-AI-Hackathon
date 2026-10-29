@@ -149,6 +149,22 @@ describe("agent API", () => {
     });
     expect(received).toEqual(agentRequest);
   });
+  it("forwards the optional seeded outcome range numbers and rejects non-numeric ones", async () => {
+    let received;
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: async (task, input) => {
+        received = { task, input };
+        return { text: "An illustration, not a forecast.", citedNumbers: [] };
+      },
+    });
+    const range = { paths: 1000, p10Lei: 78924, p50Lei: 96603, p90Lei: 118116, reachSharePct: 67 };
+    const ok = await client.postAgent({ ...agentRequest, input: { ...agentRequest.input, ...range } });
+    expect(ok.status).toBe(200);
+    expect(received.input).toEqual({ ...agentRequest.input, ...range });
+    const bad = await client.postAgent({ ...agentRequest, input: { ...agentRequest.input, p50Lei: "lots" } });
+    expect(bad.status).toBe(400);
+  });
   it("reports a model failure without exposing its exception text", async () => {
     const client = await start({
       hasKey: () => true,

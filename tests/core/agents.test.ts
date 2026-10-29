@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { profileAgent } from "../../src/agents/profile.ts";
 import { dataAgent } from "../../src/agents/data.ts";
 import { suitabilityAgent, horizonEquityCap, lossEquityCap } from "../../src/agents/suitability.ts";
-import { strategyAgent } from "../../src/agents/strategy.ts";
+import { labelForEquity, strategyAgent } from "../../src/agents/strategy.ts";
 import { challengerAgent } from "../../src/agents/challenger.ts";
 import { guardrailAgent, bannedClaims, unbackedSummaryNumbers } from "../../src/agents/guardrail.ts";
 import { nextStepAgent } from "../../src/agents/nextStep.ts";
@@ -117,6 +117,66 @@ test("strategy: candidates from the catalogue, never changes target/horizon", as
   assert.equal(s.gapLei, 0, "first proposal reaches the target in the base case");
 });
 
+test("strategy: honest labels from the equity share and distinct candidates", async () => {
+  assert.equal(labelForEquity(0), "Cautious");
+  assert.equal(labelForEquity(0.257), "Cautious");
+  assert.equal(labelForEquity(0.3), "Balanced");
+  assert.equal(labelForEquity(0.599), "Balanced");
+  assert.equal(labelForEquity(0.6), "Growth-tilted");
+  assert.equal(labelForEquity(0.9), "Growth-tilted");
+
+  const { ctx } = await pipeline(demoProfile);
+  const s = ctx.strategy!;
+  const shares = s.candidates.map((c) => c.equityShare);
+  assert.equal(new Set(shares.map((x) => x.toFixed(4))).size, shares.length, "candidates are distinct");
+  assert.deepEqual([...shares].sort((a, b) => a - b), shares, "ascending equity");
+  for (const c of s.candidates) assert.equal(c.label, labelForEquity(c.equityShare));
+  assert.equal(s.label, labelForEquity(s.equityShare));
+  assert.ok(s.outcomeRange.p10 <= s.outcomeRange.p50 && s.outcomeRange.p50 <= s.outcomeRange.p90);
+
+  // A long horizon (> 10 years) makes the growth fund eligible: a Growth-tilted candidate distinct from Balanced.
+  const long: IntakeInput = {
+    goal: { label: "Long-term pot", targetAmount: 150000, horizonYears: 15 },
+    initialCapital: 20000,
+    monthlyContribution: 400,
+    monthlyEssentialExpenses: 3000,
+    emergencyFund: 12000,
+    statedRisk: "growth",
+    maxAcceptableLossPct: 0.4,
+    inputSource: "scenario-fixture",
+  };
+  const g = (await pipeline(long)).ctx.strategy!;
+  const growth = g.candidates.find((c) => c.label === "Growth-tilted");
+  const bal = g.candidates.find((c) => c.label === "Balanced");
+  assert.ok(growth && bal && growth.equityShare > bal.equityShare + 0.1, JSON.stringify(g.candidates.map((c) => [c.label, c.equityShare])));
+  assert.equal(g.label, "Growth-tilted");
+  assert.ok(g.weights.growth! > 0);
+  const steadyPref = (await pipeline({ ...long, statedRisk: "steady" })).ctx.strategy!;
+  assert.equal(steadyPref.label, "Cautious", "never riskier than the stated preference");
+});
+
+test("challenger: seeded-outcome-range uses its own inputs; material only when the base case reaches but most paths miss", async () => {
+  const { ctx, challengerCtx } = await pipeline(demoProfile);
+  const info = ctx.challenge!.findings.find((f) => f.test === "seeded-outcome-range");
+  assert.equal(info?.id, "outcome-range");
+  assert.equal(info?.severity, "info");
+  for (const k of ["p10Lei", "p50Lei", "p90Lei", "reachShare"]) assert.equal(typeof info?.evidence.computed[k], "number", k);
+  assert.equal(info?.evidence.inputs.seed, ctx.strategy!.outcomeRange.seed);
+  // Tampering with the strategy's own outcome range does not change the Challenger's numbers.
+  const again = await challengerAgent({ ...challengerCtx, strategy: { ...ctx.strategy!, outcomeRange: { ...ctx.strategy!.outcomeRange, reachShare: 1, p10: 1 } } });
+  assert.deepEqual(again.output.findings.find((f) => f.test === "seeded-outcome-range")?.evidence, info?.evidence);
+
+  // Target set exactly to the base-case value: the base case reaches it, but volatility drag puts most paths below.
+  const input = challengerCtx.challengerInput!;
+  const tight = await challengerAgent({ ...challengerCtx, challengerInput: { ...input, targetLei: input.projection.nominal - 1 } });
+  const low = tight.output.findings.find((f) => f.test === "seeded-outcome-range")!;
+  assert.ok((low.evidence.computed.reachShare as number) < 0.5);
+  assert.equal(low.id, "outcome-range-low-reach");
+  assert.equal(low.severity, "material");
+  assert.equal(low.routeTo, "strategy");
+  assert.deepEqual(low.remedy, { kind: "acknowledge-external", topic: "outcome-range" });
+});
+
 test("challenger: independent stress tests with evidence; no access to rationale", async () => {
   const { ctx, challengerCtx } = await pipeline(demoProfile);
   assert.equal(challengerCtx.strategy, undefined);
@@ -161,6 +221,17 @@ test("guardrail: deterministic checks decide status", async () => {
   assert.equal(wrongNumber.checks.find((c) => c.id === "narrative-numbers-match")?.pass, false);
   const okNumber = await guardrailWith((s) => s);
   assert.equal(okNumber.checks.find((c) => c.id === "narrative-numbers-match")?.pass, true);
+  assert.equal(okNumber.checks.find((c) => c.id === "simulation-reproducible")?.pass, true);
+
+  // Numbers from the outcome range and the solver levers are backed.
+  const rangeText = await guardrailWith((s) => ({
+    ...s,
+    narrative: { ...s.narrative, text: `Median about ${Math.round(s.outcomeRange.p50)} lei; ${Math.round(s.outcomeRange.reachShare * 100)}% of ${s.outcomeRange.paths} paths reach the target.` },
+  }));
+  assert.equal(rangeText.checks.find((c) => c.id === "narrative-numbers-match")?.pass, true);
+  const tamperedRange = await guardrailWith((s) => ({ ...s, outcomeRange: { ...s.outcomeRange, reachShare: Math.min(1, s.outcomeRange.reachShare + 0.1) } }));
+  assert.equal(tamperedRange.checks.find((c) => c.id === "simulation-reproducible")?.pass, false);
+  assert.equal(tamperedRange.status, "withheld");
 
   assert.deepEqual(bannedClaims("Returns are not guaranteed."), []);
   assert.deepEqual(bannedClaims("You cannot lose and it is risk-free"), ["cannot lose", "risk-free"]);

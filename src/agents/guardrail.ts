@@ -1,8 +1,10 @@
 // Agent F - Guardrail / Validation. Deterministic invariants, independent
 // of any narrative: allocation arithmetic, constraint compliance (stricter of
 // planning and severe drawdowns), liquidity coverage, an independent
-// projection recomputation, data provenance, disclosures, a claim filter and
-// a cited-number check on the narrative, and unresolved blocking findings.
+// projection recomputation, a reproducibility re-run of the seeded outcome
+// simulation, data provenance, disclosures, a claim filter and a cited-number
+// check on the narrative (outcome range and solver levers included), and
+// unresolved blocking findings.
 import type { ChallengeReport, ValidationCheck, ValidationReport } from "../domain/types.ts";
 import { catalogue } from "../domain/catalogue.ts";
 import { LEI_TOLERANCE, approxEqual, blendedAssumptions, projectGoal, stressLoss } from "../domain/calculations.ts";
@@ -104,6 +106,35 @@ export async function guardrailAgent(ctx: StageContext): Promise<StageResult<Val
         withdrawals: suit.laterWithdrawals.map((w) => ({ amount: w.amountLei, inYears: w.inYears })),
       });
       add("projection-recomputed", approxEqual(recomputed.nominal, s.projection.nominal), `independent ${recomputed.nominal.toFixed(2)} vs stated ${s.projection.nominal.toFixed(2)} lei`);
+
+      // The seeded outcome range must be exactly reproducible from the plan's own inputs, seed and path count.
+      const r = s.outcomeRange;
+      if (!r) add("simulation-reproducible", false, "strategy has no seeded outcome range");
+      else {
+        const again = ctx.callTool("simulate-outcomes", {
+          initial: s.investedInitialLei,
+          monthly: s.monthlyContributionLei,
+          years: s.horizonYears,
+          assetMix: blend.assetMix,
+          assumptions: data.assumptions,
+          fee: blend.fee,
+          inflation: data.assumptions.inflation,
+          withdrawals: suit.laterWithdrawals.map((w) => ({ amount: w.amountLei, inYears: w.inYears })),
+          target: s.targetLei,
+          targetIsReal: profile.facts.targetIsInTodaysMoney?.value === true,
+          paths: r.paths,
+          seed: r.seed,
+        });
+        const keys = ["p10", "p50", "p90", "p10Real", "p50Real", "p90Real", "reachShare"] as const;
+        const differing = keys.filter((k) => again[k] !== r[k]);
+        add(
+          "simulation-reproducible",
+          differing.length === 0 && again.targetIsReal === r.targetIsReal,
+          differing.length
+            ? `re-run with seed ${r.seed} and ${r.paths} paths differs in ${differing.join(", ")}`
+            : `re-run with seed ${r.seed} and ${r.paths} paths gives identical percentiles and reach share ${(r.reachShare * 100).toFixed(1)}%`,
+        );
+      }
     }
     const uncovered = suit.liquidityRequirements.filter(
       (r) =>
@@ -149,6 +180,20 @@ export async function guardrailAgent(ctx: StageContext): Promise<StageResult<Val
       suit.maxEquityShare * 100,
       ...s.liquidityBuckets.map((b) => b.amountLei),
       ...s.levers.flatMap((l) => (l.value === undefined ? [] : [l.value])),
+      ...s.levers.flatMap((l) => (l.reachShare === undefined ? [] : [l.reachShare * 100, s.monthlyContributionLei + (l.unit === "lei-per-month" ? (l.value ?? 0) : 0)])),
+      ...(s.outcomeRange
+        ? [
+            s.outcomeRange.p10,
+            s.outcomeRange.p50,
+            s.outcomeRange.p90,
+            s.outcomeRange.p10Real,
+            s.outcomeRange.p50Real,
+            s.outcomeRange.p90Real,
+            s.outcomeRange.reachShare * 100,
+            s.outcomeRange.paths,
+            s.outcomeRange.seed,
+          ]
+        : []),
       ...s.candidates.flatMap((c) => [c.projection.nominal, c.gapLei, c.equityShare * 100]),
     ];
     const uncited = uncitedNumbers(s.narrative.text, allowed);

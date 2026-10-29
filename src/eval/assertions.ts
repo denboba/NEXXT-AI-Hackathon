@@ -270,7 +270,7 @@ export function changedInputRecomputesOnlyDependents(expectedRecomputed: StageId
 /** Steps, revisions and model calls stay within the configured limits. */
 export const boundedExecution = assertion(
   "inv.bounded-execution",
-  "Steps, revisions and model calls stay within the configured limits",
+  "Steps, revisions, model calls and tool calls stay within the configured limits",
   (run, ctx) => {
     const runs = [run, ...(ctx.followUpRun ? [ctx.followUpRun] : [])];
     const problems: string[] = [];
@@ -278,10 +278,11 @@ export const boundedExecution = assertion(
       if (r.steps > r.limits.maxSteps) problems.push(`steps ${r.steps} > ${r.limits.maxSteps}`);
       if (r.revisions > r.limits.maxRevisions) problems.push(`revisions ${r.revisions} > ${r.limits.maxRevisions}`);
       if (r.modelCalls > r.limits.maxModelCalls) problems.push(`model calls ${r.modelCalls} > ${r.limits.maxModelCalls}`);
+      if (r.toolCalls > r.limits.maxToolCalls) problems.push(`tool calls ${r.toolCalls} > ${r.limits.maxToolCalls}`);
       if (r.executions.length !== r.steps) problems.push(`executions ${r.executions.length} != steps ${r.steps}`);
       if (r.status === "running") problems.push("run did not reach a terminal status");
     }
-    return problems.length ? fail(problems.join("; ")) : ok(runs.map((r) => `steps ${r.steps}/${r.limits.maxSteps}, revisions ${r.revisions}/${r.limits.maxRevisions}, model calls ${r.modelCalls}/${r.limits.maxModelCalls}`).join(" | "));
+    return problems.length ? fail(problems.join("; ")) : ok(runs.map((r) => `steps ${r.steps}/${r.limits.maxSteps}, revisions ${r.revisions}/${r.limits.maxRevisions}, model calls ${r.modelCalls}/${r.limits.maxModelCalls}, tool calls ${r.toolCalls}/${r.limits.maxToolCalls}`).join(" | "));
   },
 );
 
@@ -336,6 +337,39 @@ export function traceHasNoFreeTextOrNames(extraSensitive: string[] = []): Assert
   });
 }
 
+/**
+ * Every released (validated) strategy carries a seeded outcome range with
+ * ordered percentiles and a reach share in [0, 1], and no run makes more
+ * tool calls than its limit.
+ */
+export const outcomeRangeAndToolBudget = assertion(
+  "inv.outcome-range-and-tool-budget",
+  "Validated strategies have an ordered seeded outcome range (0 <= reach share <= 1) and toolCalls <= maxToolCalls",
+  (run, ctx) => {
+    const problems: string[] = [];
+    const lines: string[] = [];
+    for (const r of [run, ...(ctx.followUpRun ? [ctx.followUpRun] : [])]) {
+      if (!(r.toolCalls <= r.limits.maxToolCalls)) problems.push(`tool calls ${r.toolCalls} > ${r.limits.maxToolCalls}`);
+      const s = r.result?.strategy;
+      if (!s) {
+        lines.push(`tool calls ${r.toolCalls}/${r.limits.maxToolCalls}, no released strategy`);
+        continue;
+      }
+      const o = s.outcomeRange;
+      if (!o) {
+        problems.push(`${s.id} released without an outcome range`);
+        continue;
+      }
+      if (!(o.p10 <= o.p50 && o.p50 <= o.p90)) problems.push(`${s.id} nominal percentiles not ordered`);
+      if (!(o.p10Real <= o.p50Real && o.p50Real <= o.p90Real)) problems.push(`${s.id} real percentiles not ordered`);
+      if (!(o.reachShare >= 0 && o.reachShare <= 1)) problems.push(`${s.id} reach share ${o.reachShare} outside [0, 1]`);
+      if (!(Number.isInteger(o.paths) && o.paths > 0 && Number.isInteger(o.seed))) problems.push(`${s.id} invalid paths/seed`);
+      lines.push(`${s.id}: p10 ${Math.round(o.p10)} <= p50 ${Math.round(o.p50)} <= p90 ${Math.round(o.p90)} lei, reach ${(o.reachShare * 100).toFixed(1)}% of ${o.paths} paths (seed ${o.seed}); tool calls ${r.toolCalls}/${r.limits.maxToolCalls}`);
+    }
+    return problems.length ? fail(problems.join("; ")) : ok(lines.join(" | "));
+  },
+);
+
 /** Invariants applied to every scenario. */
 export const GLOBAL_INVARIANTS: Assertion[] = [
   noValidatedWhenMandatoryCheckFails,
@@ -345,5 +379,6 @@ export const GLOBAL_INVARIANTS: Assertion[] = [
   failedStageDoesNotInvalidateUnrelated,
   boundedExecution,
   calculationMatchesIndependent,
+  outcomeRangeAndToolBudget,
   traceHasNoFreeTextOrNames(),
 ];

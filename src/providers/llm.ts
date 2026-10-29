@@ -33,6 +33,12 @@ export type ExplainStrategyInput = {
   targetLei: number;
   gapLei: number;
   horizonYears: number;
+  /** Optional seeded synthetic outcome range (computed by the simulate-outcomes tool, rounded). */
+  paths?: number;
+  p10Lei?: number;
+  p50Lei?: number;
+  p90Lei?: number;
+  reachSharePct?: number;
 };
 export type ExplainObjectionsInput = {
   findings: { id: string; severity: string; message: string }[];
@@ -116,6 +122,12 @@ export function explainStrategyTemplate(i: ExplainStrategyInput): Explanation {
     text += `The projection falls short by about ${money(i.gapLei)} lei, so the options below show what would close the gap. `;
     cited.push(i.gapLei);
   } else text += "In this illustration the projection reaches the target, but outcomes can be lower. ";
+  if (i.paths !== undefined && i.p10Lei !== undefined && i.p50Lei !== undefined && i.p90Lei !== undefined && i.reachSharePct !== undefined) {
+    text +=
+      `Across ${money(i.paths)} seeded synthetic paths the middle outcome is about ${money(i.p50Lei)} lei; one path in ten ends below ` +
+      `about ${money(i.p10Lei)} lei and one in ten above about ${money(i.p90Lei)} lei, and about ${i.reachSharePct}% of paths reach the target. `;
+    cited.push(i.paths, i.p50Lei, i.p10Lei, i.p90Lei, i.reachSharePct);
+  }
   text += "This is an illustration, not a forecast or a recommendation.";
   return { text, citedNumbers: cited };
 }
