@@ -14,6 +14,9 @@
     "check:syntax": "node scripts/check-syntax.mjs",
     "test:core": "node --test \"tests/core/**/*.test.ts\"",
     "eval": "node scripts/run-eval.mjs",
+    "demo": "node scripts/run-demo.mjs",
+    "evidence": "node scripts/run-demo.mjs --replay monthlyContribution=900 --markdown docs/evidence/demo-ana.md && node scripts/run-eval.mjs --markdown docs/evidence/eval-report.md",
+    "evidence:check": "node scripts/run-demo.mjs --replay monthlyContribution=900 --check docs/evidence/demo-ana.md && node scripts/run-eval.mjs --check docs/evidence/eval-report.md",
     "typecheck:ui-shim": "tsc -p tsconfig.ui-check.json"
   },
   "dependencies": {
