@@ -199,14 +199,20 @@ export function createConsentReceipts({
       }
       return { ok: true, receiptId: claims.receiptId, scope: claims.scope };
     },
-    /** Revokes a correctly signed receipt (expired ones too). */
+    /**
+     * Revokes a correctly signed receipt. Idempotent: an already revoked or
+     * expired receipt also returns ok, but only the first revocation of a
+     * live receipt is audited, so repeated revokes cannot flood the log.
+     */
     revoke(token) {
       const { claims, reason } = decode(token);
       if (!claims) return { ok: false, reason };
       const t = now();
       pruneRevoked(t);
-      if (claims.expiresAt > t) revoked.set(claims.receiptId, claims.expiresAt);
-      record("revoked", claims.receiptId, claims.scope);
+      if (claims.expiresAt > t && !revoked.has(claims.receiptId)) {
+        revoked.set(claims.receiptId, claims.expiresAt);
+        record("revoked", claims.receiptId, claims.scope);
+      }
       return { ok: true, receiptId: claims.receiptId };
     },
     /** A copy of both bounded rings merged in recording order, oldest first. */

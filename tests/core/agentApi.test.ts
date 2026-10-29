@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 // @ts-ignore: plain ESM server module without type declarations
 import * as api from "../../server/agentApi.mjs";
-import { NonRetryableProviderError, consentWithdrawalNotice, httpProvider } from "../../src/providers/llm.ts";
+import { NonRetryableProviderError, REVOKE_TIMEOUT_MS, consentWithdrawalNotice, httpProvider } from "../../src/providers/llm.ts";
 
 type Result = { status: number; json: Record<string, unknown> };
 type Call = { task: string; input: unknown };
@@ -304,6 +304,30 @@ test("consent receipts: rejections live in their own ring and cannot evict issue
   assert.equal(api.CONSENT_AUDIT_LIMIT, 500);
 });
 
+test("consent receipts: repeated revokes add one audit entry and expired receipts add none, still 200", () => {
+  let now = T0;
+  const store3 = api.createConsentReceipts({ secret: SECRET, now: () => now, auditLimit: 3, newId: ids() });
+  const live = store3.issue({ scope });
+  const old = store3.issue({ scope });
+  const revoke = (receipt: string) => api.handleConsentRevoke({ body: { receipt }, receipts: store3 });
+  const before = store3.auditLog().length;
+  for (let i = 0; i < 200; i++)
+    assert.deepEqual(revoke(live.receipt), { status: 200, json: { revoked: true, receiptId: live.receiptId } });
+  assert.equal(store3.auditLog().length, before + 1, "200 revokes of one receipt write exactly one entry");
+  assert.equal(store3.verify(live.receipt, scope).reason, "revoked");
+
+  now = T0 + api.CONSENT_RECEIPT_TTL_MS; // `old` has expired
+  const atExpiry = store3.auditLog().length;
+  for (let i = 0; i < 5; i++)
+    assert.deepEqual(revoke(old.receipt), { status: 200, json: { revoked: true, receiptId: old.receiptId } });
+  assert.equal(store3.auditLog().length, atExpiry, "revoking an expired receipt writes nothing");
+  assert.deepEqual(
+    store3.auditLog().map((e: { event: string; receiptId: string }) => [e.event, e.receiptId]),
+    [["issued", "receipt-0001"], ["issued", "receipt-0002"], ["revoked", "receipt-0001"], ["rejected", "receipt-0001"]],
+    "both issued events survive in a consent ring of three (the rejection from verify lives in its own ring)",
+  );
+});
+
 test("consent routes: 429 when throttled, checked first; withdrawal has its own, looser bucket", () => {
   resetConsent();
   assert.ok(api.CONSENT_REVOKE_THROTTLE_LIMIT > api.CONSENT_THROTTLE_LIMIT, "withdrawing is never harder than granting");
@@ -499,6 +523,25 @@ test("httpProvider revokeConsent reports an unconfirmed withdrawal (429, 400, of
   }
   assert.equal(consentWithdrawalNotice({ requested: true, confirmed: true }), "");
   assert.equal(consentWithdrawalNotice({ requested: false }), "");
+});
+
+test("httpProvider revokeConsent times out on a server that never answers and shows the unreachable notice", async () => {
+  assert.equal(REVOKE_TIMEOUT_MS, 5_000);
+  const sent: Sent[] = [];
+  let revokeSignal: AbortSignal | undefined;
+  const base = routedFetch({ "/api/consent": () => issueReply("tok-1"), "/api/agent": () => ({ status: 200, json: { output } }) }, sent);
+  const hanging = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => {
+    if (url !== "/api/consent/revoke") return base(url, init);
+    revokeSignal = init.signal;
+    return new Promise<never>(() => {}); // never settles and ignores the abort signal
+  };
+  const provider = httpProvider(hanging, "/api/agent", { now: () => T0, revokeTimeoutMs: 20 });
+  await provider.complete("explain-strategy", strategyInput, signal());
+  const result = await provider.revokeConsent();
+  assert.equal(result.requested && !result.confirmed && result.status, undefined);
+  assert.match(result.requested && !result.confirmed ? result.error : "", /timed out after 20 ms/);
+  assert.equal(revokeSignal?.aborted, true, "the request is aborted");
+  assert.match(consentWithdrawalNotice(result), /could not be reached/);
 });
 
 test("httpProvider and the server agree end to end: issue, use, revoke, reject", async () => {

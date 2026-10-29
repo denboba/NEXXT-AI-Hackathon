@@ -243,6 +243,8 @@ export function consentWithdrawalNotice(result: RevokeResult): string {
 
 /** Refresh a cached receipt this long before it expires. */
 export const RECEIPT_REFRESH_MARGIN_MS = 60_000;
+/** A withdrawal request still pending after this long is aborted and reported as unreachable. */
+export const REVOKE_TIMEOUT_MS = 5_000;
 
 /**
  * Sends {task, input, consent: {receipt}} to the app server, which holds any
@@ -255,14 +257,17 @@ export const RECEIPT_REFRESH_MARGIN_MS = 60_000;
  * one fresh receipt and one retry, and a rejected receipt is never reused.
  * Any failure to obtain a receipt is non-retryable, so the engine falls back
  * to deterministic rules for that task (at most one receipt request per task).
+ * The withdrawal request is aborted after `revokeTimeoutMs` (default
+ * REVOKE_TIMEOUT_MS) and then reported as unconfirmed.
  */
 export function httpProvider(
   fetchImpl: FetchLike,
   endpoint = "/api/agent",
-  options: { consentEndpoint?: string; now?: () => number } = {},
+  options: { consentEndpoint?: string; now?: () => number; revokeTimeoutMs?: number } = {},
 ): HttpReasoningProvider {
   const consentEndpoint = options.consentEndpoint ?? "/api/consent";
   const now = options.now ?? Date.now;
+  const revokeTimeoutMs = options.revokeTimeoutMs ?? REVOKE_TIMEOUT_MS;
   let cached: Receipt | undefined;
   let pending: Promise<Receipt> | undefined;
   let generation = 0;
@@ -283,13 +288,25 @@ export function httpProvider(
     return { receipt: body.receipt, expiresAt: body.expiresAt };
   }
   async function revokeToken(token: string): Promise<RevokeResult> {
+    // Bounded: a server that never answers is aborted and reported as unreachable,
+    // even if the fetch implementation ignores the abort signal.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`timed out after ${revokeTimeoutMs} ms`));
+      }, revokeTimeoutMs);
+    });
     try {
-      const res = await post(`${consentEndpoint}/revoke`, { receipt: token }, new AbortController().signal);
+      const res = await Promise.race([post(`${consentEndpoint}/revoke`, { receipt: token }, controller.signal), timeout]);
       if (res.ok) return { requested: true, confirmed: true };
       return { requested: true, confirmed: false, status: res.status, error: `revoke endpoint returned ${res.status}` };
     } catch (e) {
       // The receipt still expires on its own; the caller is told it was not confirmed.
       return { requested: true, confirmed: false, error: `revoke request failed (${e instanceof Error ? e.message : String(e)})` };
+    } finally {
+      clearTimeout(timer);
     }
   }
   /** A usable receipt, and whether it was reused from the cache. */
