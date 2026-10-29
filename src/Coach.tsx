@@ -22,6 +22,8 @@ import { guidedReply } from "./lib/guide";
 import { money, products, project } from "./lib/finance";
 import type { Risk } from "./lib/finance";
 import type { Message } from "./lib/journey";
+import { track } from "./lib/analytics";
+const answerStages = ["monthly", "horizon", "risk"];
 const welcome =
   "Hi! I’m your Investment Coach. Let’s explore what you could do with money you can set aside each month. I’ll explain the numbers, answer your questions, and help you understand the options — without the jargon.";
 const questions = [
@@ -59,7 +61,9 @@ export default function Coach() {
     answer: string,
     response: string,
     patch: Partial<typeof state> = {},
-  ) =>
+  ) => {
+    if (state.question === 0) track("journey_started", { stage: "coach" });
+    track("info_captured", { stage: answerStages[state.question] ?? "coach" });
     update((current) => ({
       ...patch,
       question: Math.min(3, current.question + 1),
@@ -69,6 +73,7 @@ export default function Coach() {
         newMessage("assistant", response, "guided"),
       ],
     }));
+  };
   async function ask(text = input) {
     if (!text.trim() || busy) return;
     const question = text.trim().slice(0, 1200);
@@ -330,6 +335,11 @@ export default function Coach() {
                     to={state.authenticated ? "/account/invest" : "/onboarding"}
                   >
                     Explore my options <ArrowUpRight size={17} />
+                  </Link>
+                </Button>
+                <Button asChild variant="secondary">
+                  <Link to="/decision">
+                    Stress-test my plan <ArrowRight size={17} />
                   </Link>
                 </Button>
                 <button

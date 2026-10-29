@@ -64,6 +64,9 @@ export default function Landing() {
               <a className="ad-how-link" href="#how-it-works">
                 How it works <ArrowDown size={15} />
               </a>
+              <Link className="ad-how-link" to="/decision">
+                Stress-test my plan <ArrowRight size={15} />
+              </Link>
             </div>
             <p className="ad-fine-print">
               Illustrative rates. Investments carry risk; capital may be lost.

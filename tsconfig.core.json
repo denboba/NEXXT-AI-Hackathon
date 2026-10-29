@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": []
+  },
+  "include": [
+    "src/lib/finance.ts",
+    "src/domain/**/*.ts",
+    "src/agents/**/*.ts",
+    "src/orchestrator/**/*.ts",
+    "src/providers/**/*.ts",
+    "src/eval/**/*.ts",
+    "src/analytics/**/*.ts",
+    "src/handoff/**/*.ts"
+  ]
+}
