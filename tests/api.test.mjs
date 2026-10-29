@@ -116,8 +116,34 @@ const agentRequest = {
     gapLei: 0,
     horizonYears: 7,
   },
+  consent: { externalProcessing: true },
 };
+// What the model receives: the whitelisted task and input, never the consent flag.
+const forwardedAgentCall = { task: agentRequest.task, input: agentRequest.input };
 describe("agent API", () => {
+  it.each([
+    { consent: undefined },
+    { consent: { externalProcessing: false } },
+    { consent: { externalProcessing: "true" } },
+  ])("rejects requests without consent to external processing with 403", async ({ consent }) => {
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: () => {
+        throw new Error("Must not be called");
+      },
+    });
+    const response = await client.postAgent({ ...agentRequest, consent });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "Consent to external processing is required.",
+      fallback: "deterministic",
+    });
+  });
+  it("validates the body before checking consent", async () => {
+    const client = await start({ hasKey: () => true });
+    const response = await client.postAgent({ task: "unknown-task", input: {} });
+    expect(response.status).toBe(400);
+  });
   it("asks the browser to fall back to deterministic rules when no key is configured", async () => {
     const client = await start({
       hasKey: () => false,
@@ -147,7 +173,7 @@ describe("agent API", () => {
       output: { text: "An illustration, not a forecast.", citedNumbers: [] },
       source: "bedrock",
     });
-    expect(received).toEqual(agentRequest);
+    expect(received).toEqual(forwardedAgentCall);
   });
   it("forwards the optional seeded outcome range numbers and rejects non-numeric ones", async () => {
     let received;

@@ -217,6 +217,19 @@ test("server 503 {fallback:'deterministic'} falls back immediately without retri
   assert.ok(generic > calls);
 });
 
+test("server 403 (consent rejected) falls back immediately without retries", async () => {
+  let calls = 0;
+  const provider = httpProvider(async () => {
+    calls++;
+    return { ok: false, status: 403, json: async () => ({ error: "Consent to external processing is required.", fallback: "deterministic" }) };
+  });
+  const s = await runWorkflow(demoProfile, opts({ reasoning: provider, externalProcessingConsent: true, limits: { maxRetries: 2 } }));
+  assert.equal(s.status, "completed");
+  assert.equal(s.trace.filter((t) => t.event === "retry").length, 0);
+  assert.equal(calls, s.modelCalls);
+  assert.ok(s.trace.some((t) => t.event === "fallback" && t.summary.includes("returned 403")));
+});
+
 test("tool layer: calls are counted, traced with numbers only, and identical across runs", async () => {
   const input = { ...demoProfile, customerRequests: ["Please call me at 0700 000 000"] };
   const a = await runWorkflow(input, opts());

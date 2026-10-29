@@ -216,7 +216,12 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
   json(): Promise<unknown>;
 }>;
 
-/** POSTs {task, input} to the app server, which holds any credentials. */
+/**
+ * POSTs {task, input, consent: {externalProcessing: true}} to the app server,
+ * which holds any credentials and rejects requests without that consent (403).
+ * The engine only calls this provider when externalProcessingConsent is true,
+ * so sending the consent flag here reflects a choice the user already made.
+ */
 export function httpProvider(fetchImpl: FetchLike, endpoint = "/api/agent"): ReasoningProvider {
   return {
     id: `http:${endpoint}`,
@@ -225,15 +230,16 @@ export function httpProvider(fetchImpl: FetchLike, endpoint = "/api/agent"): Rea
       const res = await fetchImpl(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, input }),
+        body: JSON.stringify({ task, input, consent: { externalProcessing: true } }),
         signal,
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => undefined);
-        // The server answers {fallback:"deterministic"} when no model is
-        // configured, the model is down or the caller is throttled; a 400 means
-        // the request itself is invalid. Retrying cannot help in either case.
-        if (res.status === 400 || (isPlainObject(errBody) && errBody.fallback === "deterministic"))
+        // The server answers {fallback:"deterministic"} when consent is
+        // missing (403), no model is configured, the model is down or the
+        // caller is throttled; a 400 means the request itself is invalid.
+        // Retrying cannot help in any of these cases.
+        if (res.status === 400 || res.status === 403 || (isPlainObject(errBody) && errBody.fallback === "deterministic"))
           throw new NonRetryableProviderError(`agent endpoint returned ${res.status} (deterministic fallback requested)`);
         throw new Error(`agent endpoint returned ${res.status}`);
       }
