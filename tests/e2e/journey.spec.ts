@@ -52,16 +52,14 @@ test("landing explains purchasing power and supports changing the horizon", asyn
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: "Turn idle cash into a first investment.",
+      name: "Stop situationshipping with your cash.",
     }),
   ).toBeVisible();
   await expect(page.locator(".inflation-stats")).toContainText("7,651");
   await page.getByRole("button", { name: "10y", exact: true }).click();
   await expect(page.locator(".inflation-stats")).toContainText("5,854");
   await noOverflow(page);
-  await page
-    .getByRole("link", { name: "Start my 2-minute investment journey" })
-    .click();
+  await page.getByRole("link", { name: "See what it could do" }).click();
   await expect(page).toHaveURL(/\/coach$/);
 });
 test("complete new-customer journey preserves choices and activates only a demo plan", async ({

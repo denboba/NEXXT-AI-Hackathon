@@ -17,8 +17,8 @@ import { useJourney } from "../lib/journey";
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <Link to="/" className="brand" aria-label="Investment Coach home">
-      <span className="brand-mark">
-        <ArrowUpRight strokeWidth={3} />
+      <span className="brand-mark" aria-hidden="true">
+        R
       </span>
       <span className="brand-words">
         <strong>

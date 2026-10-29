@@ -4593,3 +4593,464 @@ html {
     padding-bottom: 115px;
   }
 }
+
+/* Bold brand layer: near-black surfaces, yellow accents, heavy type, chat bubbles, pills. */
+:root {
+  --yellow: #fce64c;
+  --yellow-hover: #f7dc1f;
+  --ink: #141414;
+  --night: #161616;
+  --night-raised: #222222;
+  --night-line: #2e2e2e;
+  --night-muted: #a6a6a1;
+  --paper: #f2f2ef;
+  color: var(--ink);
+}
+h1,
+h2,
+h3 {
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  color: var(--ink);
+}
+::selection {
+  background: var(--yellow);
+  color: var(--ink);
+}
+.eyebrow {
+  font-weight: 800;
+  color: var(--ink);
+}
+.eyebrow > span:not(.yellow-dot) {
+  background: var(--yellow);
+  box-shadow: 0 0 0 1px #d8c42a;
+}
+.muted-heading {
+  color: #8a8a84;
+}
+
+/* Pills */
+.button {
+  border-radius: 999px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  padding-inline: 26px;
+}
+.button-primary {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--ink);
+}
+.button-primary:hover {
+  background: var(--yellow-hover);
+  border-color: var(--yellow-hover);
+}
+.button-dark {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.button-dark:hover {
+  background: #333;
+  border-color: #333;
+}
+.button-secondary {
+  border-color: #d9d9d4;
+}
+.button-small {
+  padding-inline: 18px;
+}
+.segmented,
+.segmented button,
+.quick-replies button,
+.demo-badge,
+.educational-pill {
+  border-radius: 999px;
+}
+
+/* Dark header with the yellow R tile */
+.site-header {
+  background: var(--night);
+  border-bottom-color: var(--night);
+  color: white;
+}
+.brand-mark {
+  border-radius: 9px;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.footer .brand-mark {
+  border-radius: 7px;
+  font-size: 15px;
+}
+.site-header .brand-words strong {
+  color: white;
+  font-weight: 800;
+}
+.site-header .brand-words > span,
+.site-header .desktop-nav > a:not(.button) {
+  color: var(--night-muted);
+}
+.site-header .desktop-nav > a:not(.button):hover {
+  color: white;
+}
+.site-header .concept {
+  background: var(--night-raised);
+  color: var(--night-muted);
+}
+.site-header .demo-badge {
+  border-color: var(--night-line);
+  color: var(--night-muted);
+}
+.site-header .journey-step {
+  color: var(--night-muted);
+}
+.site-header .journey-step.active {
+  color: white;
+}
+.site-header .journey-step.completed {
+  color: #d9d9d4;
+}
+.site-header .step-number {
+  border-color: var(--night-line);
+}
+.site-header .active .step-number {
+  color: var(--ink);
+}
+.site-header .completed .step-number {
+  background: var(--night-raised);
+  border-color: var(--night-line);
+  color: var(--yellow);
+}
+.site-header .step-line {
+  background: var(--night-line);
+}
+.site-header .avatar {
+  background: var(--yellow);
+  color: var(--ink);
+  font-weight: 800;
+}
+.site-header .mobile-menu {
+  color: white;
+}
+.site-header .mobile-nav {
+  background: var(--night);
+  border-top-color: var(--night-line);
+}
+.site-header .mobile-nav a {
+  color: white;
+  border-color: var(--night-line);
+}
+.mobile-progress {
+  background: var(--yellow);
+  color: var(--ink);
+  font-weight: 750;
+}
+
+/* Start page hero, styled like the campaign ad */
+.ad-hero {
+  background: var(--night);
+  color: white;
+  overflow: hidden;
+}
+.ad-hero-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 72px;
+  align-items: center;
+  padding-block: 72px 88px;
+}
+.ad-copy {
+  order: 2;
+}
+.ad-chat {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 470px;
+  width: 100%;
+}
+.ad-sticker {
+  align-self: flex-start;
+  background: white;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  padding: 8px 18px;
+  border-radius: 16px;
+  transform: rotate(-3deg);
+  animation: ad-pop 0.45s 0.1s both;
+}
+.ad-bubble {
+  transform-origin: left bottom;
+  background: white;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  padding: 20px 26px;
+  border-radius: 28px;
+  max-width: 88%;
+  animation: ad-pop 0.45s both;
+}
+.ad-bubble:nth-of-type(1) {
+  animation-delay: 0.45s;
+}
+.ad-bubble:nth-of-type(2) {
+  animation-delay: 1.05s;
+}
+.ad-bubble:nth-of-type(3) {
+  animation-delay: 1.65s;
+}
+.ad-bubble:nth-of-type(4) {
+  animation-delay: 2.4s;
+}
+.ad-bubble-yellow {
+  transform-origin: right bottom;
+  background: var(--yellow);
+  align-self: flex-end;
+}
+.ad-bubble-coach {
+  transform-origin: right bottom;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--night-raised);
+  color: white;
+  border: 1px solid var(--night-line);
+  font-size: 17px;
+  padding: 14px 22px 14px 14px;
+  align-self: flex-end;
+}
+.ad-coach-orb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--yellow);
+  color: var(--ink);
+  flex-shrink: 0;
+}
+.ad-copy h1 {
+  color: var(--yellow);
+  font-size: clamp(44px, 4.7vw, 72px);
+  font-weight: 900;
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+.ad-description {
+  color: #d4d4cf;
+  font-size: 17px;
+  line-height: 1.6;
+  max-width: 440px;
+  margin-top: 26px;
+}
+.ad-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px 26px;
+  margin-top: 34px;
+}
+.ad-actions .button {
+  min-height: 64px;
+  padding-inline: 34px;
+  font-size: 19px;
+  font-weight: 800;
+}
+.ad-how-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--night-muted);
+  font-size: 14px;
+  font-weight: 650;
+}
+.ad-how-link:hover {
+  color: white;
+}
+.ad-fine-print {
+  color: #9a9a95;
+  font-size: 12px;
+  margin-top: 26px;
+}
+/* No opacity fade: bubbles stay at full contrast whenever they are visible. */
+@keyframes ad-pop {
+  from {
+    visibility: hidden;
+    transform: translateY(18px) scale(0.85);
+  }
+}
+.ad-sticker {
+  animation-name: ad-sticker-pop;
+}
+@keyframes ad-sticker-pop {
+  from {
+    visibility: hidden;
+    transform: rotate(-3deg) translateY(18px) scale(0.85);
+  }
+}
+
+/* Landing sections pick up the same voice */
+.trust-strip {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--ink);
+  font-weight: 700;
+}
+.trust-strip span,
+.trust-strip svg {
+  color: var(--ink);
+}
+.how-section {
+  background: var(--paper);
+}
+.closing-cta {
+  background: var(--night);
+  border-radius: 32px;
+  padding: 40px 44px;
+}
+.closing-cta h2 {
+  color: var(--yellow);
+  font-size: 32px;
+  font-weight: 900;
+}
+.closing-cta p {
+  color: #c9c9c4;
+  font-size: 14px;
+}
+.closing-symbol {
+  color: var(--yellow);
+}
+.closing-cta .button-dark {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--ink);
+  font-size: 14px;
+}
+.closing-cta .button-dark:hover {
+  background: var(--yellow-hover);
+}
+
+/* Rounder, chunkier cards */
+.chat-card,
+.concern-card,
+.form-card,
+.growth-card,
+.hero-art,
+.inflation-card,
+.investment-summary-bar,
+.journey-card,
+.journey-summary,
+.onboarding-option,
+.plan-review,
+.product-card,
+.simulator,
+.success-plan,
+.dialog-content {
+  border-radius: 24px;
+}
+.demo-active,
+.success-demo {
+  border-radius: 28px;
+}
+
+/* Coach messages look like the ad's chat */
+.message-bubble {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+  border-radius: 6px 22px 22px 22px;
+  padding: 14px 18px;
+}
+.message.user .message-bubble {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: var(--ink);
+  font-weight: 600;
+  border-radius: 22px 6px 22px 22px;
+}
+.coach-orb,
+.message-avatar {
+  background: var(--yellow);
+  color: var(--ink);
+}
+.chat-composer {
+  border-radius: 999px;
+}
+
+/* Dark footer */
+.footer {
+  max-width: none;
+  margin-inline: 0;
+  padding: 36px max(24px, calc((100% - 1296px) / 2));
+  background: var(--night);
+  border-top: 0;
+  color: white;
+}
+.footer .brand-words strong {
+  color: white;
+}
+.footer .concept {
+  background: var(--night-raised);
+  color: var(--night-muted);
+}
+.footer p,
+.footer-links {
+  color: var(--night-muted);
+}
+.footer-links button:hover {
+  color: white;
+}
+
+@media (max-width: 980px) {
+  .ad-hero-inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 44px;
+    padding-block: 40px 56px;
+  }
+  .ad-chat {
+    max-width: 520px;
+  }
+}
+@media (max-width: 720px) {
+  .ad-hero-inner {
+    width: calc(100% - 32px);
+  }
+  .ad-sticker {
+    font-size: 18px;
+  }
+  .ad-bubble {
+    font-size: 18px;
+    padding: 16px 20px;
+    border-radius: 24px;
+    max-width: 92%;
+  }
+  .ad-bubble-coach {
+    font-size: 15px;
+  }
+  .ad-copy h1 {
+    font-size: min(46px, calc(12vw - 4px));
+  }
+  .ad-description {
+    font-size: 15px;
+  }
+  .ad-actions .button {
+    width: 100%;
+    font-size: 17px;
+    min-height: 58px;
+  }
+  .closing-cta {
+    border-radius: 24px;
+    padding: 28px 24px;
+  }
+  .closing-cta h2 {
+    font-size: 26px;
+  }
+}
