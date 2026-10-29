@@ -3,6 +3,7 @@
 // checks freshness against the injected clock, applies the documented
 // fallback policy, and records provenance for every input.
 import type { CapitalMarketAssumptions, DataFlag, DataReport, ProvenanceEntry } from "../domain/types.ts";
+import { missingVolatilityClasses } from "../domain/simulation.ts";
 import { validateAssumptions } from "../providers/marketData.ts";
 import type { MarketDataProvider } from "../providers/marketData.ts";
 import { StageError } from "../orchestrator/context.ts";
@@ -76,6 +77,14 @@ export async function dataAgent(ctx: StageContext): Promise<StageResult<DataRepo
     notes.push({ event: "fallback", summary: `market data fallback applied: ${fallback.id}`, data: { provider: fallback.id, kind: fb.kind } });
   }
   if (assumptions.kind === "synthetic-fixture") flags.push("synthetic-assumptions");
+  // Volatility is optional in the payload. Missing classes use the labelled
+  // synthetic default in the simulation; disclosed here, never blocking.
+  const missingVol = missingVolatilityClasses(assumptions);
+  if (missingVol.length) {
+    flags.push("default-volatility-applied");
+    reportNotes.push(`Volatility missing for ${missingVol.join(", ")} in ${assumptions.sourceLabel}; the outcome simulation uses the synthetic default for ${missingVol.length === 1 ? "that class" : "those classes"}.`);
+    notes.push({ event: "validation", summary: `volatility missing for ${missingVol.join(", ")}; synthetic default applied`, data: { classes: missingVol } });
+  }
 
   const provenance: ProvenanceEntry[] = [
     ...Object.entries(ctx.profile?.sources ?? {}).map(([field, source]) => ({ field, source: String(source) })),

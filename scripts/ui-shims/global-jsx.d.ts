@@ -15,7 +15,21 @@ declare namespace React {
     | undefined
     | Iterable<ReactNode>;
   type ButtonHTMLAttributes<_T> = { [attribute: string]: any };
-  type HTMLAttributes<_T> = { [attribute: string]: any };
+  /** Minimal synthetic mouse event (the subset of React.MouseEvent handlers commonly read). */
+  interface MouseEvent<T = Element> {
+    currentTarget: T;
+    target: EventTarget;
+    defaultPrevented: boolean;
+    button: number;
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+    preventDefault(): void;
+    stopPropagation(): void;
+  }
+  /** Stand-in for csstype's CSSProperties: property names are not checked. */
+  type CSSProperties = { [property: string]: string | number | undefined };
 }
 
 declare namespace JSX {
@@ -48,5 +62,20 @@ declare namespace UIShim {
     children?: React.ReactNode;
     [attribute: string]: ((...args: any[]) => any) | string | number | bigint | boolean | object | null | undefined;
   };
-  type LooseComponent = (props: LooseProps) => JSX.Element;
+  /**
+   * The common HTML attributes that third-party components in modules.d.ts
+   * forward to their DOM element. Unknown camelCase props are rejected;
+   * hyphenated props (aria-*, data-*) are accepted by TypeScript on any
+   * component, as with the real types.
+   */
+  type ElementProps<T = Element> = {
+    children?: React.ReactNode;
+    className?: string;
+    style?: React.CSSProperties;
+    id?: string;
+    title?: string;
+    role?: string;
+    tabIndex?: number;
+    onClick?: (event: React.MouseEvent<T>) => void;
+  };
 }

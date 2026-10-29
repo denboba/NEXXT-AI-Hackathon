@@ -15,6 +15,7 @@ import type {
 } from "../domain/types.ts";
 import type { MarketDataProvider } from "../providers/marketData.ts";
 import type { Parsed, ReasoningTask } from "../providers/llm.ts";
+import type { ToolArgs, ToolName, ToolResults } from "./tools.ts";
 
 export type StageId = "profile" | "data" | "suitability" | "strategy" | "challenger" | "guardrail" | "nextStep";
 export const STAGE_ORDER: StageId[] = ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"];
@@ -29,6 +30,7 @@ export type TraceEvent =
   | "conflict"
   | "skip"
   | "reuse"
+  | "tool"
   | "error";
 
 export type TraceNote = { event: TraceEvent; summary: string; data?: Record<string, unknown> };
@@ -38,6 +40,12 @@ export type Limits = {
   maxSteps: number;
   maxRevisions: number;
   maxModelCalls: number;
+  /**
+   * Deterministic tool calls (callTool) per run. Default 60: the Ana demo
+   * uses 23; the worst case with maxRevisions 2 is about 35 (3 strategy
+   * passes x 8 calls, 3 challenger passes x 3 calls, 2 guardrail passes).
+   */
+  maxToolCalls: number;
   providerTimeoutMs: number;
   maxRetries: number;
   /** Cached/live market data older than this is stale. */
@@ -47,6 +55,7 @@ export const DEFAULT_LIMITS: Limits = {
   maxSteps: 25,
   maxRevisions: 2,
   maxModelCalls: 8,
+  maxToolCalls: 60,
   providerTimeoutMs: 8000,
   maxRetries: 1,
   maxDataAgeDays: 120,
@@ -94,6 +103,11 @@ export type StageContext = {
   idFactory: () => string;
   /** Bounded, timed, validated model call with retry and deterministic fallback. */
   callModel<T>(task: ReasoningTask, input: object, parse: (raw: unknown) => Parsed<T>): Promise<ModelCallResult<T>>;
+  /**
+   * Bounded, traced call of a named deterministic tool (src/orchestrator/tools.ts).
+   * Throws StageError('tool-budget-exceeded') once limits.maxToolCalls is reached.
+   */
+  callTool<N extends ToolName>(name: N, args: ToolArgs[N]): ToolResults[N];
   /** Runs `fn` with an AbortSignal that fires after the provider timeout. */
   withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, ms?: number): Promise<T>;
 };

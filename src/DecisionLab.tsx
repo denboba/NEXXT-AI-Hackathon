@@ -40,7 +40,8 @@ import { rerunWorkflow, runWorkflow } from "./orchestrator/engine.ts";
 import type { EngineOptions, WorkflowState } from "./orchestrator/engine.ts";
 import { compareVersions, rerunDelta } from "./orchestrator/view.ts";
 import type { RerunDelta, Snapshot } from "./orchestrator/view.ts";
-import { deterministicProvider, httpProvider } from "./providers/llm.ts";
+import { consentWithdrawalNotice, deterministicProvider, httpProvider } from "./providers/llm.ts";
+import type { HttpReasoningProvider } from "./providers/llm.ts";
 import {
   LOCAL_ADAPTER_LABEL,
   declineConsent,
@@ -194,6 +195,7 @@ export default function DecisionLab() {
   const [health, setHealth] = useState<Health>({ state: "checking" });
   const [provider, setProvider] = useState<"deterministic" | "bedrock">("deterministic");
   const [externalConsent, setExternalConsent] = useState(false);
+  const [withdrawalNotice, setWithdrawalNotice] = useState("");
   const [cf, setCf] = useState({ horizonYears: "", monthlyContribution: "", withdrawalAmount: "", maxLossPct: "" });
   const [consent, setConsent] = useState<ConsentState>(initialConsent());
   const [scopes, setScopes] = useState({ briefing: false, name: false });
@@ -201,6 +203,10 @@ export default function DecisionLab() {
   const [exportMessage, setExportMessage] = useState("");
   const started = useRef(false);
   const captured = useRef(false);
+  // One HTTP provider per page so its server-issued consent receipt is reused and can be revoked.
+  const agentProvider = useRef<HttpReasoningProvider | null>(null);
+  // Ignores a late withdrawal result once the box was ticked again.
+  const consentChoice = useRef(0);
   const coachDone = journey.question >= 3;
 
   useEffect(() => {
@@ -263,8 +269,23 @@ export default function DecisionLab() {
   const bedrockSelected = provider === "bedrock" && health.state === "available";
   const engineOptions = (): EngineOptions =>
     bedrockSelected
-      ? { reasoning: httpProvider((url, init) => fetch(url, init)), externalProcessingConsent: externalConsent }
+      ? {
+          reasoning: (agentProvider.current ??= httpProvider((url, init) => fetch(url, init))),
+          externalProcessingConsent: externalConsent,
+        }
       : { reasoning: deterministicProvider() };
+
+  function setExternalChoice(granted: boolean) {
+    setExternalConsent(granted);
+    setWithdrawalNotice("");
+    const choice = ++consentChoice.current;
+    // Withdrawal asks the server to revoke the receipt; a new one is requested only on the next consented run.
+    // If the server does not confirm, say so: the receipt then only lapses at its expiry.
+    if (granted) return;
+    void agentProvider.current?.revokeConsent().then((result) => {
+      if (choice === consentChoice.current) setWithdrawalNotice(consentWithdrawalNotice(result));
+    });
+  }
 
   function resetHandoff() {
     setConsent(initialConsent());
@@ -342,9 +363,10 @@ export default function DecisionLab() {
 
   function tryLever(lever: Lever) {
     if (!run || lever.value === undefined) return;
-    if (lever.id === "increase-contribution" && run.input.monthlyContribution !== undefined)
+    // Solver levers carry the same units as the base-case levers (extra lei/month, extra years).
+    if ((lever.id === "increase-contribution" || lever.id === "contribution-for-reach-share") && run.input.monthlyContribution !== undefined)
       replay({ monthlyContribution: Math.round(run.input.monthlyContribution + lever.value) });
-    else if (lever.id === "extend-horizon" && run.input.goal?.horizonYears !== undefined)
+    else if ((lever.id === "extend-horizon" || lever.id === "horizon-for-reach-share") && run.input.goal?.horizonYears !== undefined)
       replay({ goal: { ...run.input.goal, horizonYears: run.input.goal.horizonYears + lever.value } });
     else if (lever.id === "lower-target" && run.input.goal) replay({ goal: { ...run.input.goal, targetAmount: lever.value } });
   }
@@ -509,10 +531,17 @@ export default function DecisionLab() {
             {health.state === "unavailable" && <p className="lab-muted">{health.reason}</p>}
             {bedrockSelected && (
               <label className="lab-consent-line">
-                <input type="checkbox" checked={externalConsent} onChange={(e) => setExternalConsent(e.target.checked)} /> I agree that the
+                <input type="checkbox" checked={externalConsent} onChange={(e) => setExternalChoice(e.target.checked)} /> I agree that the
                 goal figures and optional text (no name) are sent to Amazon Bedrock through this app’s server for this assessment. Without
-                this, the deterministic provider is used and the fallback is recorded in the trace.
+                this, the deterministic provider is used and the fallback is recorded in the trace. Ticking the box sends nothing yet: on
+                the next run with Bedrock the server records this choice as a consent receipt (an id and an expiry, valid 30 minutes, no
+                goal data). Unticking the box stops external processing from this page at once and asks the server to revoke the receipt.
               </label>
+            )}
+            {withdrawalNotice && (
+              <p className="lab-muted" role="status">
+                {withdrawalNotice}
+              </p>
             )}
           </fieldset>
           <div className="lab-form-actions lab-field-wide">
@@ -546,7 +575,7 @@ export default function DecisionLab() {
             </ol>
             <p className="lab-provider-badge">
               Provider: <strong>{run.providers.reasoning}</strong> · market data: <strong>{run.providers.marketData}</strong> · model calls{" "}
-              {run.modelCalls} · fallbacks {run.fallbacks} · steps {run.steps}
+              {run.modelCalls} · tool calls {run.toolCalls}/{run.limits.maxToolCalls} · fallbacks {run.fallbacks} · steps {run.steps}
               {run.fallbacks > 0 && " (a fallback to deterministic rules happened; see the trace)"}
             </p>
             {run.status === "needs-clarification" && profile && (
@@ -780,7 +809,7 @@ export default function DecisionLab() {
               {nextStep.scenarioSuggestions.length > 0 && (
                 <ul className="lab-levers">
                   {nextStep.scenarioSuggestions.map((l) => (
-                    <li key={l.id}>
+                    <li key={`${l.id}-${l.reachShare ?? "base"}`}>
                       <span>{l.description}</span>
                       {l.value !== undefined && l.id !== "review-concentration" && (
                         <button type="button" className="text-button" disabled={busy} onClick={() => tryLever(l)}>
@@ -911,8 +940,10 @@ const SNAPSHOT_ROWS: { key: keyof Snapshot; label: string; format: (s: Snapshot)
   { key: "projectedLei", label: "Projected value (hypothetical)", format: (s) => leiOrDash(s.projectedLei) },
   { key: "gapLei", label: "Gap to target", format: (s) => leiOrDash(s.gapLei) },
   { key: "stressLossPct", label: "Severe-crash loss", format: (s) => pctOrDash(s.stressLossPct) },
+  { key: "reachShare", label: "Seeded paths reaching the target (synthetic)", format: (s) => pctOrDash(s.reachShare) },
   { key: "revisions", label: "Revisions", format: (s) => String(s.revisions) },
   { key: "modelCalls", label: "Model calls", format: (s) => String(s.modelCalls) },
+  { key: "toolCalls", label: "Tool calls", format: (s) => String(s.toolCalls) },
 ];
 
 function fieldValue(input: IntakeInput, field: string): string {

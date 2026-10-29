@@ -235,7 +235,7 @@ export function AccountForm() {
                       <Mail size={18} />
                       <span>
                         Verify contact details
-                        <small>Illustrated only — no email is sent.</small>
+                        <small>Illustrated only: no email is sent.</small>
                       </span>
                     </p>
                     <p>

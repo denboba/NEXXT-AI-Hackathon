@@ -8,7 +8,17 @@ import { blockById } from "../../domain/catalogue.ts";
 import type { ChallengeReport, Finding, Strategy, ValidationReport } from "../../domain/types.ts";
 import type { WorkflowState } from "../../orchestrator/engine.ts";
 import type { TraceEntry } from "../../orchestrator/trace.ts";
-import { STAGE_TITLES, compareVersions, revisionTransitions, stageRows, stressCaseOf } from "../../orchestrator/view.ts";
+import {
+  OUTCOME_RANGE_LABEL,
+  STAGE_TITLES,
+  compareVersions,
+  outcomeRangeRows,
+  revisionTransitions,
+  solverLevers,
+  stageRows,
+  stressCaseOf,
+  toolCalls,
+} from "../../orchestrator/view.ts";
 import type { StageRow } from "../../orchestrator/view.ts";
 
 export const pct1 = (x: number) => `${(Math.round(x * 1000) / 10).toFixed(1)}%`;
@@ -51,6 +61,7 @@ export const STATUS_TEXT: Record<string, string> = {
 export function StageTimeline({ state, caption }: { state: WorkflowState; caption?: string }) {
   const rows = stageRows(state);
   const loops = revisionTransitions(state);
+  const tools = toolCalls(state);
   return (
     <div className="lab-timeline">
       {caption && <p className="lab-caption">{caption}</p>}
@@ -63,6 +74,7 @@ export function StageTimeline({ state, caption }: { state: WorkflowState; captio
                 <strong>{row.title}</strong>
                 <Chip tone={ex.tone}>{ex.text}</Chip>
                 {row.executions.length > 1 && <Chip>{row.executions.length} executions</Chip>}
+                {row.toolCalls > 0 && <Chip tone="info">{row.toolCalls} tool call{row.toolCalls === 1 ? "" : "s"}</Chip>}
                 {row.status === "skipped" && <Chip>Skipped</Chip>}
               </div>
               {row.executions.length > 0 ? (
@@ -90,6 +102,25 @@ export function StageTimeline({ state, caption }: { state: WorkflowState; captio
           ))}
         </div>
       )}
+      <details className="lab-details lab-tool-calls">
+        <summary>
+          {state.toolCalls} deterministic tool call{state.toolCalls === 1 ? "" : "s"} (limit {state.limits.maxToolCalls})
+        </summary>
+        {tools.length === 0 ? (
+          <p className="lab-muted">No tool was called in this run (stages were reused or not reached).</p>
+        ) : (
+          <ol className="lab-transitions">
+            {tools.map((t) => (
+              <li key={t.seq}>
+                #{t.call} {STAGE_TITLES[t.stage]} · <strong>{t.tool}</strong>:{" "}
+                {Object.entries(t.result)
+                  .map(([k, v]) => `${k} ${v}`)
+                  .join(", ")}
+              </li>
+            ))}
+          </ol>
+        )}
+      </details>
       <details className="lab-details">
         <summary>All {state.transitions.length} transitions</summary>
         <ol className="lab-transitions">
@@ -109,6 +140,7 @@ const blockName = (id: string) => blockById(id)?.name ?? id;
 /** One strategy version with its assumptions and the Challenger's severe-crash numbers. */
 export function StrategyCard({ title, strategy, challenge, note }: { title: string; strategy: Strategy; challenge?: ChallengeReport; note?: string }) {
   const stress = stressCaseOf(challenge);
+  const solved = solverLevers(strategy);
   return (
     <article className="lab-strategy">
       <header>
@@ -171,6 +203,26 @@ export function StrategyCard({ title, strategy, challenge, note }: { title: stri
           </dd>
         </div>
       </dl>
+      {strategy.outcomeRange && (
+        <section className="lab-outcome-range" aria-label="Range of outcomes">
+          <span className="lab-kicker">Range of outcomes · {OUTCOME_RANGE_LABEL}</span>
+          <dl className="lab-facts">
+            {outcomeRangeRows(strategy.outcomeRange).map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+          {solved.length > 0 && (
+            <ul className="lab-levers">
+              {solved.map((l) => (
+                <li key={`${l.id}-${l.reachShare}`}>{l.description}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
       <details className="lab-details">
         <summary>Assumptions behind this version</summary>
         <ul>

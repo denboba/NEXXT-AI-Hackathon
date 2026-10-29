@@ -1,7 +1,8 @@
 // Pure, framework-free view helpers that turn a WorkflowState into the
 // evidence shown in the Decision Lab and the Evaluation Lab. Everything here
 // is derived from recorded stage outputs and executions; nothing is invented.
-import type { ChallengeReport, Finding, IntakeInput, Strategy, SuitabilityReport } from "../domain/types.ts";
+import type { ChallengeReport, Finding, IntakeInput, Lever, OutcomeRange, Strategy, SuitabilityReport } from "../domain/types.ts";
+import { volatilityProvenance } from "../domain/simulation.ts";
 import { STAGE_ORDER } from "./context.ts";
 import type { StageId } from "./context.ts";
 import type { StageExecution, Transition, WorkflowState } from "./engine.ts";
@@ -25,9 +26,12 @@ export type StageRow = {
   executions: { pass: number; status: StageExecution["status"]; reason: string }[];
   reason?: string;
   error?: string;
+  /** Deterministic tool calls recorded for this stage in the trace. */
+  toolCalls: number;
 };
 
 export function stageRows(state: WorkflowState): StageRow[] {
+  const tools = toolCallsByStage(state);
   return STAGE_ORDER.map((stage) => {
     const ex = state.executions.filter((e) => e.stage === stage);
     const fresh = ex.some((e) => e.status === "fresh");
@@ -37,6 +41,7 @@ export function stageRows(state: WorkflowState): StageRow[] {
       ex.length === 0 ? "not-run" : failed ? "failed" : fresh && reused ? "mixed" : fresh ? "recomputed" : "reused";
     const record = state.stages[stage];
     return {
+      toolCalls: tools[stage],
       stage,
       title: STAGE_TITLES[stage],
       status: record.status,
@@ -47,6 +52,59 @@ export function stageRows(state: WorkflowState): StageRow[] {
     };
   });
 }
+
+export type ToolCallRow = {
+  seq: number;
+  stage: StageId;
+  tool: string;
+  call: number;
+  args: Record<string, number>;
+  result: Record<string, number>;
+};
+
+const numbersOnly = (v: unknown): Record<string, number> =>
+  v && typeof v === "object" ? Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((e): e is [string, number] => typeof e[1] === "number")) : {};
+
+/** Tool calls recorded in the sanitized trace, in order. */
+export function toolCalls(state: WorkflowState): ToolCallRow[] {
+  return state.trace
+    .filter((t) => t.event === "tool" && t.stage !== "orchestrator")
+    .map((t) => ({
+      seq: t.seq,
+      stage: t.stage as StageId,
+      tool: String(t.data?.tool ?? "unknown"),
+      call: typeof t.data?.call === "number" ? t.data.call : 0,
+      args: numbersOnly(t.data?.args),
+      result: numbersOnly(t.data?.result),
+    }));
+}
+
+export function toolCallsByStage(state: WorkflowState): Record<StageId, number> {
+  const counts = Object.fromEntries(STAGE_ORDER.map((id) => [id, 0])) as Record<StageId, number>;
+  for (const t of toolCalls(state)) counts[t.stage]++;
+  return counts;
+}
+
+export const OUTCOME_RANGE_LABEL = "Seeded synthetic simulation, not a forecast";
+
+export type OutcomeRow = { label: string; value: string };
+
+/** Display rows for a strategy's seeded outcome range (values in the target's terms). */
+export function outcomeRangeRows(r: OutcomeRange): OutcomeRow[] {
+  const v = (nominal: number, real: number) => lei(r.targetIsReal ? real : nominal) + (r.targetIsReal ? " (today's money)" : "");
+  return [
+    { label: "Low case (10th percentile)", value: v(r.p10, r.p10Real) },
+    { label: "Middle case (median)", value: v(r.p50, r.p50Real) },
+    { label: "High case (90th percentile)", value: v(r.p90, r.p90Real) },
+    { label: "Paths reaching the target", value: pct(r.reachShare) },
+    { label: "Worst peak-to-trough fall on any path", value: pct(r.worstPathMaxDrawdown) },
+    { label: "Paths · seed", value: `${r.paths.toLocaleString("en-GB")} · ${r.seed}` },
+    { label: "Portfolio volatility used", value: `${pct(r.portfolioVolatility)}/yr (${volatilityProvenance(r)})` },
+  ];
+}
+
+/** Levers computed by the seeded goal-seek solver (they state a reach share). */
+export const solverLevers = (s: Strategy): Lever[] => s.levers.filter((l) => l.reachShare !== undefined);
 
 /** Transitions that sent the workflow backwards after a challenge. */
 export function revisionTransitions(state: WorkflowState): Transition[] {
@@ -186,6 +244,8 @@ export type Snapshot = {
   stressLossPct?: number;
   revisions: number;
   modelCalls: number;
+  toolCalls: number;
+  reachShare?: number;
 };
 
 export function snapshot(state: WorkflowState): Snapshot {
@@ -202,6 +262,8 @@ export function snapshot(state: WorkflowState): Snapshot {
     stressLossPct: stressCaseOf(challenges[challenges.length - 1])?.lossPct,
     revisions: state.revisions,
     modelCalls: state.modelCalls,
+    toolCalls: state.toolCalls,
+    reachShare: last?.outcomeRange?.reachShare,
   };
 }
 

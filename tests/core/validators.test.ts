@@ -68,3 +68,19 @@ test("validateAssumptions rejects malformed market data", () => {
   assert.equal(validateAssumptions({ ...syntheticAssumptions(), units: "percent" }).ok, false);
   assert.equal(validateAssumptions({ ...syntheticAssumptions(), sourceLabel: "" }).ok, false);
 });
+
+test("validateAssumptions: volatility and correlation are optional but validated", () => {
+  const a = syntheticAssumptions();
+  const withEquity = (equity: Record<string, unknown>) => ({ ...a, assetClasses: { ...a.assetClasses, equity } });
+  const { volatility: _v, ...noVol } = a.assetClasses.equity;
+  void _v;
+  assert.equal(validateAssumptions(withEquity(noVol)).ok, true, "a payload without volatility is still accepted");
+  const { equityBondCorrelation: _c, ...noCorrelation } = a;
+  void _c;
+  assert.equal(validateAssumptions(noCorrelation).ok, true);
+  for (const bad of [-0.1, Number.NaN, 1.5, "16%"]) {
+    const r = validateAssumptions(withEquity({ ...a.assetClasses.equity, volatility: bad }));
+    assert.equal(r.ok, false, `volatility ${String(bad)} must be rejected`);
+  }
+  for (const bad of [-1.5, 2, Number.NaN]) assert.equal(validateAssumptions({ ...a, equityBondCorrelation: bad }).ok, false);
+});

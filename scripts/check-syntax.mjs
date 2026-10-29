@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Dependency-free syntax check for every src/**/*.{ts,tsx} file.
+// Dependency-free syntax check for every src/**/*.{ts,tsx} file and every
+// server/*.mjs module (the latter via `node --check`).
 // Uses TypeScript's transpileModule (syntax-only, no type information), so it
 // works without node_modules. Resolution order for the typescript package:
 // TYPESCRIPT_PATH env, local node_modules, global npm root, known nvm path.
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,8 +79,28 @@ for (const file of files) {
   }
 }
 
+// Plain ESM server modules (server/*.mjs) are checked with `node --check`.
+const serverDir = join(root, "server");
+const serverFiles = existsSync(serverDir)
+  ? readdirSync(serverDir)
+      .filter((name) => name.endsWith(".mjs"))
+      .sort()
+      .map((name) => join(serverDir, name))
+  : [];
+for (const file of serverFiles) {
+  try {
+    execFileSync(process.execPath, ["--check", file], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (error) {
+    errorCount += 1;
+    console.error(`${relative(root, file)} - node --check failed:\n${String(error.stderr ?? error.message)}`);
+  }
+}
+
+const total = files.length + serverFiles.length;
 if (errorCount > 0) {
-  console.error(`check-syntax: ${errorCount} error(s) in ${files.length} file(s) (TypeScript ${ts.version}).`);
+  console.error(`check-syntax: ${errorCount} error(s) in ${total} file(s) (TypeScript ${ts.version}, node --check for server/*.mjs).`);
   process.exit(1);
 }
-console.log(`check-syntax: ${files.length} file(s) OK (TypeScript ${ts.version}).`);
+console.log(
+  `check-syntax: ${total} file(s) OK (${files.length} src via TypeScript ${ts.version}, ${serverFiles.length} server/*.mjs via node --check).`,
+);

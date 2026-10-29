@@ -10,7 +10,9 @@ import { catalogue } from "../domain/catalogue.ts";
 import { blendedAssumptions } from "../domain/calculations.ts";
 import { replay } from "../providers/llm.ts";
 import type { ReplayFixtures } from "../providers/llm.ts";
-import { strategyAgent, projectSleeve, gapFor } from "../agents/strategy.ts";
+import { LABEL_BANDS, LABEL_ORDER, strategyAgent, projectSleeve, gapFor, outcomeRangeOf } from "../agents/strategy.ts";
+import { simulateGoal } from "../domain/simulation.ts";
+import type { SimulationInput } from "../domain/simulation.ts";
 import { bannedClaims } from "../agents/guardrail.ts";
 import { SAFETY_MESSAGES } from "../agents/nextStep.ts";
 import type { Agent, Limits, StageId } from "../orchestrator/context.ts";
@@ -42,7 +44,9 @@ export type ScenarioCategory =
   | "privacy-consent"
   | "concentration-risk"
   | "loop-limit"
-  | "input-validation";
+  | "input-validation"
+  | "seeded-simulation"
+  | "tool-budget";
 
 export type ReasoningSpec =
   | { kind: "deterministic" }
@@ -57,7 +61,9 @@ export type MarketDataSpec =
   | { kind: "slow"; delayMs: number }
   | { kind: "malformed" }
   /** Cached synthetic snapshot whose payload falsely claims kind 'live'. */
-  | { kind: "spoofed-live" };
+  | { kind: "spoofed-live" }
+  /** Fresh cached synthetic snapshot that carries volatility for equity only (20%, not the 16% default). */
+  | { kind: "partial-volatility"; asOf: string };
 
 export type ScenarioExpected = {
   terminalStatus: TerminalStatus;
@@ -103,6 +109,9 @@ export const normalProfile: IntakeInput = {
   freeText: "I would like 60,000 lei for a renovation in 10 years.",
   inputSource: "scenario-fixture",
 };
+
+/** The same customer without a stated risk preference (the loss limit is still stated). */
+const { statedRisk: _omitted, ...noStatedRiskProfile } = normalProfile;
 
 const DETERMINISTIC = { kind: "deterministic" } as const;
 const SYNTHETIC = { kind: "synthetic" } as const;
@@ -209,6 +218,50 @@ export const SCENARIOS: Scenario[] = [
       assertion("next-step-review-plan", "Next step is to review the validated plan; no adviser escalation needed", (run) => {
         const n = run.result?.nextStep;
         return check(n?.primary === "review-validated-plan" && n.adviser.recommended === false, `primary ${n?.primary}, adviser ${n?.adviser.recommended}`);
+      }),
+    ],
+  },
+  {
+    id: "no-stated-risk-preference",
+    title: "No stated risk preference but a stated loss limit: no question, the default Balanced preference is named",
+    category: "normal-journey",
+    covers: "1, 2",
+    synthetic: true,
+    input: noStatedRiskProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+      maxRevisions: 0,
+    },
+    assertions: [
+      assertion("no-risk-question", "The stated loss limit is enough: no clarification question, no invented risk preference", (run) => {
+        const p = profileOf(run);
+        const questions = (run.result?.nextStep?.questions ?? []).map((q) => q.field);
+        return check(
+          !!p && p.facts.statedRisk === undefined && p.facts.maxAcceptableLossPct?.value === 0.25 && questions.length === 0 && !p.missing.includes("maxAcceptableLossPct|statedRisk"),
+          `facts.statedRisk=${p?.facts.statedRisk?.value}, questions [${questions.join(", ")}], missing [${p?.missing.join(", ")}]`,
+        );
+      }),
+      assertion("default-preference-named", "The choice rationale names the default preference instead of a stated one", (run) => {
+        const s = finalStrategy(run);
+        const r = s?.rationale ?? "";
+        return check(r.includes("the default preference (Balanced, no risk preference stated)") && !r.includes("your stated preference"), r.split(";")[0] || "no released strategy");
+      }),
+      assertion("not-riskier-than-balanced", "The released strategy is not riskier than Balanced and stays within the suitability cap", (run) => {
+        const s = finalStrategy(run);
+        const suit = suitabilityOf(run);
+        if (!s || !suit) return fail("no released strategy");
+        return check(
+          LABEL_ORDER.indexOf(s.label) <= LABEL_ORDER.indexOf("Balanced") && s.equityShare <= LABEL_BANDS.balancedUpTo + 1e-9 && s.equityShare <= suit.maxEquityShare + 1e-9,
+          `${s.label}: equity ${pct(s.equityShare)}, cap ${pct(suit.maxEquityShare)}`,
+        );
+      }),
+      assertion("all-checks-pass", "All 16 guardrail checks run and pass", (run) => {
+        const checks = run.result?.validation?.checks ?? [];
+        const failed = checks.filter((c) => !c.pass).map((c) => c.id);
+        return check(checks.length === 16 && failed.length === 0, `${checks.length} checks, failed [${failed.join(", ")}]`);
       }),
     ],
   },
@@ -805,6 +858,53 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: "partial-volatility-market-data",
+    title: "Market data with volatility for equity only (20%): payload value kept, defaults named per class, run not blocked",
+    category: "market-data",
+    covers: "6, extra",
+    synthetic: true,
+    input: normalProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: { kind: "partial-volatility", asOf: "2026-01-10" } },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated-with-open-issues",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("partial-volatility-flagged", "The data stage accepts the fresh payload, flags the default volatility and records it in the trace", (run) => {
+        const d = dataOf(run);
+        const traced = traceHas(run, (t) => t.stage === "data" && t.event === "validation" && t.summary === "volatility missing for bond, cash; synthetic default applied");
+        return check(
+          !!d && d.assumptions.kind === "cached" && d.freshness === "fresh" && !d.flags.includes("fallback-applied") && d.flags.includes("default-volatility-applied") && traced,
+          `kind ${d?.assumptions.kind}, freshness ${d?.freshness}, flags [${d?.flags.join(", ")}], traced ${traced}`,
+        );
+      }),
+      assertion("mixed-provenance", "The outcome range reports 'mixed' volatility: payload for equity, synthetic default for bond and cash", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const r = s.outcomeRange;
+        const byClass = r.volatilityByClassSource;
+        const used = simulateGoal({ ...args, seed: r.seed, paths: r.paths }).assumptionsUsed.volatility;
+        return check(
+          r.volatilitySource === "mixed" && byClass.equity === "market-data-payload" && byClass.bond === "synthetic-default" && byClass.cash === "synthetic-default" && used.equity === 0.2,
+          `source ${r.volatilitySource}, equity ${byClass.equity} (${pct(used.equity)}), bond ${byClass.bond} (${pct(used.bond)}), cash ${byClass.cash} (${pct(used.cash)})`,
+        );
+      }),
+      assertion("defaulted-classes-named", "The strategy assumptions and the open issues name the defaulted classes", (run) => {
+        const s = finalStrategy(run);
+        const line = s?.assumptions.find((a) => a.startsWith("Outcome range:")) ?? "";
+        const issue = (run.result?.validation?.openIssues ?? []).find((i) => /default volatility/.test(i)) ?? "";
+        return check(line.includes("default volatility for bond, cash") && issue.includes("bond, cash"), `${line.slice(line.indexOf("("))} | ${issue}`);
+      }),
+      assertion("checks-pass", "Every guardrail check still passes; the gap is disclosed, not blocking", (run) => {
+        const checks = run.result?.validation?.checks ?? [];
+        const failed = checks.filter((c) => !c.pass).map((c) => c.id);
+        return check(checks.length === 16 && failed.length === 0, `${checks.length} checks, failed [${failed.join(", ")}]`);
+      }),
+    ],
+  },
+  {
     id: "invalid-input",
     title: "Invalid values are reported back, never silently dropped or repaired",
     category: "input-validation",
@@ -828,6 +928,91 @@ export const SCENARIOS: Scenario[] = [
       }),
     ],
   },
+  {
+    id: "seeded-range-determinism",
+    title: "The seeded outcome range is reproducible; another seed changes the paths but keeps percentiles ordered",
+    category: "seeded-simulation",
+    covers: "extra",
+    synthetic: true,
+    input: demoProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    expected: {
+      terminalStatus: "completed",
+      validationStatus: "validated-with-open-issues",
+      mustVisitStages: ["profile", "data", "suitability", "strategy", "challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("same-seed-identical", "Re-simulating the released strategy with its seed and path count gives a byte-identical outcome range", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const again = outcomeRangeOf(simulateGoal({ ...args, seed: s.outcomeRange.seed, paths: s.outcomeRange.paths }));
+        const same = JSON.stringify(again) === JSON.stringify(s.outcomeRange);
+        const check2 = run.result?.validation?.checks.find((c) => c.id === "simulation-reproducible");
+        return check(same && check2?.pass === true, `identical ${same}; guardrail simulation-reproducible ${check2?.pass}; p50 ${Math.round(s.outcomeRange.p50)} lei, seed ${s.outcomeRange.seed}`);
+      }),
+      assertion("other-seed-ordered", "A different seed changes the simulated paths, while p10 <= p50 <= p90 and 0 <= reach share <= 1 still hold", (run) => {
+        const s = finalStrategy(run);
+        const args = s && simulationArgsOf(run, s);
+        if (!s || !args) return fail("no released strategy");
+        const other = simulateGoal({ ...args, seed: s.outcomeRange.seed + 1, paths: s.outcomeRange.paths });
+        const changed = other.p10 !== s.outcomeRange.p10 || other.p50 !== s.outcomeRange.p50 || other.p90 !== s.outcomeRange.p90;
+        const ordered = other.p10 <= other.p50 && other.p50 <= other.p90 && other.reachShare >= 0 && other.reachShare <= 1;
+        return check(changed && ordered, `seed ${other.seed}: p10 ${Math.round(other.p10)}, p50 ${Math.round(other.p50)}, p90 ${Math.round(other.p90)} lei, reach ${pct(other.reachShare)} (changed ${changed})`);
+      }),
+      assertion("tool-events-traced", "Strategy, challenger and guardrail call the simulation through the traced tool layer", (run) => {
+        const stages = new Set(run.trace.filter((t) => t.event === "tool" && t.data?.tool === "simulate-outcomes").map((t) => t.stage));
+        const counted = run.trace.filter((t) => t.event === "tool").length === run.toolCalls;
+        return check(["strategy", "challenger", "guardrail"].every((id) => stages.has(id as StageId)) && counted, `simulate-outcomes called by [${[...stages].join(", ")}]; ${run.toolCalls} tool calls traced ${counted}`);
+      }),
+    ],
+  },
+  {
+    id: "tool-budget-exceeded",
+    title: "A tiny tool-call budget stops the run with an explicit reason; nothing is validated",
+    category: "tool-budget",
+    covers: "7, extra",
+    synthetic: true,
+    input: normalProfile,
+    providers: { reasoning: DETERMINISTIC, marketData: SYNTHETIC },
+    options: { limits: { maxToolCalls: 3 } },
+    expected: {
+      terminalStatus: "failed",
+      mustVisitStages: ["profile", "data", "suitability", "strategy"],
+      mustSkipStages: ["challenger", "guardrail", "nextStep"],
+    },
+    assertions: [
+      assertion("explicit-budget-reason", "The terminal failure names the tool budget; the limit is recorded in the trace", (run) =>
+        check(
+          JSON.stringify(run.result?.unresolved) === JSON.stringify(["tool-budget-exceeded"]) && traceHas(run, (t) => t.event === "error" && t.summary.includes("tool-call limit (3) reached")),
+          `unresolved ${JSON.stringify(run.result?.unresolved)}`,
+        ),
+      ),
+      assertion("never-validated", "No strategy is released and no validation report says validated", (run) =>
+        check(!run.result?.strategy && run.result?.validation === undefined && run.toolCalls <= 3, `released ${!!run.result?.strategy}, validation ${run.result?.validation?.status ?? "not-run"}, tool calls ${run.toolCalls}/3`),
+      ),
+    ],
+  },
 ];
+
+/** Simulation inputs of a strategy, rebuilt from the recorded stage outputs. */
+function simulationArgsOf(run: WorkflowState, s: Strategy): Omit<SimulationInput, "seed" | "paths"> | undefined {
+  const d = dataOf(run);
+  const suit = suitabilityOf(run);
+  if (!d || !suit) return undefined;
+  const blend = blendedAssumptions(s.weights, catalogue, d.assumptions);
+  return {
+    initial: s.investedInitialLei,
+    monthly: s.monthlyContributionLei,
+    years: s.horizonYears,
+    assetMix: blend.assetMix,
+    assumptions: d.assumptions,
+    fee: blend.fee,
+    inflation: d.assumptions.inflation,
+    withdrawals: suit.laterWithdrawals.map((w) => ({ amount: w.amountLei, inYears: w.inYears })),
+    target: s.targetLei,
+    targetIsReal: s.outcomeRange.targetIsReal,
+  };
+}
 
 export const scenarioById = (id: string) => SCENARIOS.find((s) => s.id === id);

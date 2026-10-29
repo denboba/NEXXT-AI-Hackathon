@@ -3,7 +3,20 @@ import assert from "node:assert/strict";
 import { runWorkflow, rerunWorkflow } from "../../src/orchestrator/engine.ts";
 import type { EngineOptions } from "../../src/orchestrator/engine.ts";
 import { demoProfile } from "../../src/domain/demoProfile.ts";
-import { changedInputFields, compareVersions, rerunDelta, revisionTransitions, stageRows, stressCaseOf } from "../../src/orchestrator/view.ts";
+import {
+  OUTCOME_RANGE_LABEL,
+  changedInputFields,
+  compareVersions,
+  outcomeRangeRows,
+  rerunDelta,
+  revisionTransitions,
+  snapshot,
+  solverLevers,
+  stageRows,
+  stressCaseOf,
+  toolCalls,
+  toolCallsByStage,
+} from "../../src/orchestrator/view.ts";
 import { counterIds, fixedClock } from "./helpers.ts";
 
 const opts = (): EngineOptions => ({ clock: fixedClock, idFactory: counterIds(), limits: { providerTimeoutMs: 50 } });
@@ -15,7 +28,9 @@ test("view: demo comparison exposes initial vs revised strategy with evidence", 
   assert.equal(c.initial?.version, 1);
   assert.equal(c.revised?.version, 2);
   assert.equal(c.initial?.label, "Balanced");
-  assert.equal(c.revised?.label, "Balanced");
+  // Labels follow the actual equity share: 25.7% equity is Cautious (< 30%).
+  assert.equal(c.revised?.label, "Cautious");
+  assert.ok(c.changes.includes("Scenario label changed from Balanced to Cautious."));
   assert.equal(Math.round(c.initial!.projection.nominal), 98521);
   assert.equal(Math.round(c.revised!.projection.nominal), 85565);
   assert.equal(Math.round(c.revised!.gapLei), 4435);
@@ -55,6 +70,32 @@ test("view: counterfactual delta lists reused and recomputed stages", async () =
   assert.equal(Math.round(d.before.projectedLei!), 85565);
   assert.ok(d.after.projectedLei! > d.before.projectedLei!);
   assert.deepEqual(changedInputFields(demoProfile, { ...demoProfile, goal: { ...demoProfile.goal!, horizonYears: 9 } }), ["goal.horizonYears"]);
+});
+
+test("view: outcome range rows, solver levers and tool calls per stage", async () => {
+  const s = await runWorkflow(demoProfile, opts());
+  const strategy = s.result!.strategy!;
+  const rows = outcomeRangeRows(strategy.outcomeRange);
+  assert.equal(OUTCOME_RANGE_LABEL, "Seeded synthetic simulation, not a forecast");
+  assert.deepEqual(rows.map((r) => r.label).slice(0, 4), ["Low case (10th percentile)", "Middle case (median)", "High case (90th percentile)", "Paths reaching the target"]);
+  assert.equal(rows[1].value, `${Math.round(strategy.outcomeRange.p50).toLocaleString("en-GB")} lei`);
+  assert.equal(rows[3].value, `${(Math.round(strategy.outcomeRange.reachShare * 1000) / 10).toFixed(1)}%`);
+  assert.ok(rows.some((r) => r.value.startsWith(`1,000 · ${strategy.outcomeRange.seed}`)));
+  const real = outcomeRangeRows({ ...strategy.outcomeRange, targetIsReal: true });
+  assert.ok(real[0].value.endsWith("(today's money)"));
+  const solver = solverLevers(strategy);
+  assert.ok(solver.length > 0 && solver.every((l) => l.reachShare !== undefined));
+  const calls = toolCalls(s);
+  assert.equal(calls.length, s.toolCalls);
+  assert.deepEqual(calls.map((c) => c.call), calls.map((_, i) => i + 1));
+  const perStage = toolCallsByStage(s);
+  assert.equal(Object.values(perStage).reduce((a, b) => a + b, 0), s.toolCalls);
+  assert.equal(perStage.profile, 0);
+  assert.ok(perStage.strategy > 0 && perStage.challenger > 0 && perStage.guardrail > 0);
+  assert.equal(stageRows(s).find((r) => r.stage === "strategy")?.toolCalls, perStage.strategy);
+  const snap = snapshot(s);
+  assert.equal(snap.toolCalls, s.toolCalls);
+  assert.equal(snap.reachShare, strategy.outcomeRange.reachShare);
 });
 
 test("view: a run that needs clarification is not presented as released", async () => {

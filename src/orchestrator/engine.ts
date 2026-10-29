@@ -2,7 +2,8 @@
 // workflow. Each stage is a separate agent with a typed output; the engine
 // decides what runs next from those outputs, reuses stages whose inputs are
 // unchanged (fingerprints), re-runs only invalidated stages, bounds retries,
-// revisions, steps and model calls, and records a sanitized trace.
+// revisions, steps, model calls and deterministic tool calls, and records a
+// sanitized trace.
 import type {
   ChallengeReport,
   CustomerProfile,
@@ -17,6 +18,8 @@ import type {
 import { stressLoss } from "../domain/calculations.ts";
 import { NonRetryableProviderError, deterministicProvider, explainObjectionsTemplate, explainStrategyTemplate } from "../providers/llm.ts";
 import { bannedClaims, unbackedSummaryNumbers } from "../agents/guardrail.ts";
+import { explainStrategyInput } from "../agents/strategy.ts";
+import { runTool, summarizeToolCall } from "./tools.ts";
 import type { ReasoningProvider, ReasoningTask } from "../providers/llm.ts";
 import { syntheticFixtureProvider } from "../providers/marketData.ts";
 import type { MarketDataProvider } from "../providers/marketData.ts";
@@ -73,6 +76,8 @@ export type WorkflowState = {
   directives: Directives;
   revisions: number;
   modelCalls: number;
+  /** Deterministic tool calls made by agents in this run (bounded by limits.maxToolCalls). */
+  toolCalls: number;
   fallbacks: number;
   steps: number;
   status: WorkflowStatus;
@@ -146,6 +151,7 @@ async function execute(input: IntakeInput, options: EngineOptions, prevExecution
     directives: { suitability: [], strategy: [] },
     revisions: 0,
     modelCalls: 0,
+    toolCalls: 0,
     fallbacks: 0,
     steps: 0,
     status: "running",
@@ -217,6 +223,29 @@ async function execute(input: IntakeInput, options: EngineOptions, prevExecution
     return { value: parsed.value, providerId: rules.id, fallback: true };
   };
 
+  // Tools are deterministic and in-process; the budget bounds the work an
+  // agent can trigger, and every call is traced with numbers-only summaries.
+  // Duration uses the injected clock, so traces stay deterministic in tests.
+  const callTool: StageContext["callTool"] = (name, args) => {
+    if (state.toolCalls >= limits.maxToolCalls) {
+      note("error", `tool ${name}: tool-call limit (${limits.maxToolCalls}) reached`, { tool: name, limit: limits.maxToolCalls });
+      throw new StageError("tool-budget-exceeded", `tool-call limit (${limits.maxToolCalls}) reached before ${name}`);
+    }
+    state.toolCalls++;
+    const started = clock().getTime();
+    const result = runTool(name, args);
+    const summary = summarizeToolCall(name, args, result);
+    const durationMs = clock().getTime() - started;
+    note("tool", `${name} #${state.toolCalls}: ${Object.entries(summary.result).map(([k, v]) => `${k} ${v}`).join(", ")}`, {
+      tool: name,
+      call: state.toolCalls,
+      args: summary.args,
+      result: summary.result,
+      durationMs,
+    });
+    return result;
+  };
+
   const view = () => ({
     input,
     reasoning: { id: reasoning.id },
@@ -245,6 +274,7 @@ async function execute(input: IntakeInput, options: EngineOptions, prevExecution
     clock,
     idFactory,
     callModel,
+    callTool,
     withTimeout,
   });
 
@@ -471,15 +501,7 @@ async function execute(input: IntakeInput, options: EngineOptions, prevExecution
         state.stages.challenger.output = out.challenge;
         trace.add("orchestrator", "conflict", "challenger summary contained prohibited claims or unbacked numbers; replaced with deterministic summary of the findings");
       }
-      const t = explainStrategyTemplate({
-        label: s.label,
-        equityPct: Math.round(s.equityShare * 100),
-        nominalLei: Math.round(s.projection.nominal),
-        realLei: Math.round(s.projection.real),
-        targetLei: Math.round(s.targetLei),
-        gapLei: Math.round(s.gapLei),
-        horizonYears: s.horizonYears,
-      });
+      const t = explainStrategyTemplate(explainStrategyInput(s));
       out.strategy = { ...s, narrative: { ...t, source: rules.id, repaired: true } };
       state.stages.strategy.output = out.strategy;
       transition("guardrail", "guardrail", "re-validate after deterministic narrative repair");

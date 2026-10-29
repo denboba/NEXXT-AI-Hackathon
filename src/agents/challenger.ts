@@ -1,7 +1,9 @@
 // Agent E - Independent Challenger / Stress-Test. It receives only the
 // profile facts, the constraints and the strategy's weights, buckets and
 // projection (never its rationale or narrative), recomputes the projection
-// itself, and runs named stress tests with explicit inputs and evidence.
+// itself, and runs named stress tests with explicit inputs and evidence,
+// including its own seeded synthetic outcome range. Key computations go
+// through the traced tool layer (ctx.callTool).
 import type { ChallengeReport, Finding } from "../domain/types.ts";
 import { catalogue } from "../domain/catalogue.ts";
 import {
@@ -11,9 +13,9 @@ import {
   concentrationShare,
   projectGoal,
   roundLei,
-  stressLoss,
   stressedValueAtGoal,
 } from "../domain/calculations.ts";
+import { MIN_REACH_SHARE, OUTCOME_RANGE_FINDING, SIMULATION_PATHS, SIMULATION_SEED } from "../domain/simulation.ts";
 import { parseExplanation } from "../providers/llm.ts";
 import { StageError } from "../orchestrator/context.ts";
 import type { StageContext, StageResult } from "../orchestrator/context.ts";
@@ -44,7 +46,7 @@ export async function challengerAgent(ctx: StageContext): Promise<StageResult<Ch
   // Independent recomputation from weights (not trusting the strategy's numbers).
   const blend = blendedAssumptions(s.weights, catalogue, cma);
   const base = { initial: s.investedInitialLei, monthly: s.monthlyContributionLei, years: horizon, grossReturn: blend.grossReturn, fee: blend.fee, inflation: cma.inflation, withdrawals };
-  const recomputed = projectGoal(base);
+  const recomputed = ctx.callTool("project-goal", base);
 
   testsRun.push("projection-recompute");
   if (!approxEqual(recomputed.nominal, s.projection.nominal)) {
@@ -62,7 +64,7 @@ export async function challengerAgent(ctx: StageContext): Promise<StageResult<Ch
 
   // 1. Severe equity crash in the year before the goal.
   testsRun.push("severe-crash-before-goal");
-  const lossPct = stressLoss(blend.assetMix, SEVERE_CRASH);
+  const lossPct = ctx.callTool("stress-loss", { mix: blend.assetMix, drawdowns: SEVERE_CRASH });
   const shockYear = Math.max(0, horizon - 1);
   const crash = stressedValueAtGoal({ ...base, shockPct: lossPct, shockYear, recoveryReturn: blend.netReturn });
   const crashEvidence = {
@@ -198,7 +200,43 @@ export async function challengerAgent(ctx: StageContext): Promise<StageResult<Ch
       });
   }
 
-  // 7. Fee and inflation sensitivity.
+  // 7. Seeded synthetic outcome range, computed from the Challenger's own
+  // recomputed inputs (not the strategy's outcomeRange).
+  testsRun.push("seeded-outcome-range");
+  const inTodaysMoney = facts.targetIsInTodaysMoney?.value === true;
+  const sim = ctx.callTool("simulate-outcomes", {
+    ...base,
+    assetMix: blend.assetMix,
+    assumptions: cma,
+    target,
+    targetIsReal: inTodaysMoney,
+    paths: SIMULATION_PATHS,
+    seed: SIMULATION_SEED,
+  });
+  const baseReaches = (inTodaysMoney ? recomputed.real : recomputed.nominal) + LEI_TOLERANCE >= target;
+  const shown = (nominal: number, real: number) => roundLei(inTodaysMoney ? real : nominal);
+  const rangeEvidence = {
+    inputs: { seed: sim.seed, paths: sim.paths, portfolioVolatility: r4(sim.portfolioVolatility), minReachShare: MIN_REACH_SHARE, baseCaseReachesTarget: baseReaches },
+    computed: { p10Lei: r2(sim.p10), p50Lei: r2(sim.p50), p90Lei: r2(sim.p90), reachShare: r4(sim.reachShare) },
+  };
+  const rangeText = `Across ${sim.paths} seeded synthetic paths (seed ${sim.seed}) the value at the goal is about ${shown(sim.p10, sim.p10Real)} lei at the 10th percentile, ${shown(sim.p50, sim.p50Real)} lei at the median and ${shown(sim.p90, sim.p90Real)} lei at the 90th percentile; ${(sim.reachShare * 100).toFixed(1)}% of paths reach the target.`;
+  // Material only when the base case looks fine but most paths miss. The
+  // remedy is an acknowledgement (the strategy discloses it and its solver
+  // levers show how to raise the share), so it can never cause a loop.
+  if (baseReaches && sim.reachShare < MIN_REACH_SHARE)
+    findings.push({
+      id: OUTCOME_RANGE_FINDING,
+      test: "seeded-outcome-range",
+      severity: "material",
+      failedConstraint: `at least ${MIN_REACH_SHARE * 100}% of seeded synthetic paths should reach a target that the base case reaches`,
+      evidence: rangeEvidence,
+      routeTo: "strategy",
+      remedy: { kind: "acknowledge-external", topic: "outcome-range" },
+      message: `The base case reaches the target, but only ${(sim.reachShare * 100).toFixed(1)}% of ${sim.paths} seeded synthetic paths do. ${rangeText}`,
+    });
+  else findings.push({ id: "outcome-range", test: "seeded-outcome-range", severity: "info", evidence: rangeEvidence, routeTo: "strategy", message: rangeText });
+
+  // 8. Fee and inflation sensitivity.
   testsRun.push("fee-inflation-sensitivity");
   const higherFee = projectGoal({ ...base, fee: base.fee + 0.005 });
   const higherInflation = projectGoal({ ...base, inflation: base.inflation + 0.02 });

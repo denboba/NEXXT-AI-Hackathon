@@ -33,6 +33,12 @@ export type ExplainStrategyInput = {
   targetLei: number;
   gapLei: number;
   horizonYears: number;
+  /** Optional seeded synthetic outcome range (computed by the simulate-outcomes tool, rounded). */
+  paths?: number;
+  p10Lei?: number;
+  p50Lei?: number;
+  p90Lei?: number;
+  reachSharePct?: number;
 };
 export type ExplainObjectionsInput = {
   findings: { id: string; severity: string; message: string }[];
@@ -116,6 +122,12 @@ export function explainStrategyTemplate(i: ExplainStrategyInput): Explanation {
     text += `The projection falls short by about ${money(i.gapLei)} lei, so the options below show what would close the gap. `;
     cited.push(i.gapLei);
   } else text += "In this illustration the projection reaches the target, but outcomes can be lower. ";
+  if (i.paths !== undefined && i.p10Lei !== undefined && i.p50Lei !== undefined && i.p90Lei !== undefined && i.reachSharePct !== undefined) {
+    text +=
+      `Across ${money(i.paths)} seeded synthetic paths the middle outcome is about ${money(i.p50Lei)} lei; one path in ten ends below ` +
+      `about ${money(i.p10Lei)} lei and one in ten above about ${money(i.p90Lei)} lei, and about ${i.reachSharePct}% of paths reach the target. `;
+    cited.push(i.paths, i.p50Lei, i.p10Lei, i.p90Lei, i.reachSharePct);
+  }
   text += "This is an illustration, not a forecast or a recommendation.";
   return { text, citedNumbers: cited };
 }
@@ -204,29 +216,159 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
   json(): Promise<unknown>;
 }>;
 
-/** POSTs {task, input} to the app server, which holds any credentials. */
-export function httpProvider(fetchImpl: FetchLike, endpoint = "/api/agent"): ReasoningProvider {
+type Receipt = { receipt: string; expiresAt: number };
+/**
+ * Outcome of a withdrawal. Locally the receipt is always forgotten and the
+ * engine gate stops further external calls; `confirmed` says whether the
+ * server also acknowledged the revocation.
+ */
+export type RevokeResult =
+  | { requested: false }
+  | { requested: true; confirmed: true }
+  | { requested: true; confirmed: false; status?: number; error: string };
+export type HttpReasoningProvider = ReasoningProvider & {
+  /** Forgets the cached consent receipt locally and asks the server to revoke it. */
+  revokeConsent(): Promise<RevokeResult>;
+};
+
+/** Plain-language hint for the Decision Lab after unticking the consent box; empty when nothing needs saying. */
+export function consentWithdrawalNotice(result: RevokeResult): string {
+  if (!result.requested || result.confirmed) return "";
+  const why = result.status === 429 ? "it is busy (HTTP 429)" : result.status ? `it answered HTTP ${result.status}` : "it could not be reached";
+  return (
+    `Nothing more is sent from this page, but the server did not confirm the revocation: ${why}. ` +
+    "The receipt it issued expires on its own within 30 minutes."
+  );
+}
+
+/** Refresh a cached receipt this long before it expires. */
+export const RECEIPT_REFRESH_MARGIN_MS = 60_000;
+/** A withdrawal request still pending after this long is aborted and reported as unreachable. */
+export const REVOKE_TIMEOUT_MS = 5_000;
+
+/**
+ * Sends {task, input, consent: {receipt}} to the app server, which holds any
+ * credentials and rejects requests without a valid consent receipt (403).
+ * The engine only calls this provider when externalProcessingConsent is true,
+ * so the receipt is requested from POST /api/consent with
+ * {scope: "external-processing", granted: true} only after the user made
+ * that choice. The receipt is cached until shortly before it expires; one
+ * 403 on a reused receipt (expired or revoked server-side) triggers exactly
+ * one fresh receipt and one retry, and a rejected receipt is never reused.
+ * Any failure to obtain a receipt is non-retryable, so the engine falls back
+ * to deterministic rules for that task (at most one receipt request per task).
+ * The withdrawal request is aborted after `revokeTimeoutMs` (default
+ * REVOKE_TIMEOUT_MS) and then reported as unconfirmed.
+ */
+export function httpProvider(
+  fetchImpl: FetchLike,
+  endpoint = "/api/agent",
+  options: { consentEndpoint?: string; now?: () => number; revokeTimeoutMs?: number } = {},
+): HttpReasoningProvider {
+  const consentEndpoint = options.consentEndpoint ?? "/api/consent";
+  const now = options.now ?? Date.now;
+  const revokeTimeoutMs = options.revokeTimeoutMs ?? REVOKE_TIMEOUT_MS;
+  let cached: Receipt | undefined;
+  let pending: Promise<Receipt> | undefined;
+  let generation = 0;
+
+  const post = (url: string, body: unknown, signal: AbortSignal) =>
+    fetchImpl(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+
+  async function requestReceipt(signal: AbortSignal): Promise<Receipt> {
+    let res;
+    try {
+      res = await post(consentEndpoint, { scope: "external-processing", granted: true }, signal);
+    } catch (e) {
+      throw new NonRetryableProviderError(`consent receipt request failed (${e instanceof Error ? e.message : String(e)})`);
+    }
+    const body = res.ok ? await res.json().catch(() => undefined) : undefined;
+    if (!res.ok || !isPlainObject(body) || typeof body.receipt !== "string" || typeof body.expiresAt !== "number")
+      throw new NonRetryableProviderError(`consent endpoint returned ${res.status} without a receipt`);
+    return { receipt: body.receipt, expiresAt: body.expiresAt };
+  }
+  async function revokeToken(token: string): Promise<RevokeResult> {
+    // Bounded: a server that never answers is aborted and reported as unreachable,
+    // even if the fetch implementation ignores the abort signal.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`timed out after ${revokeTimeoutMs} ms`));
+      }, revokeTimeoutMs);
+    });
+    try {
+      const res = await Promise.race([post(`${consentEndpoint}/revoke`, { receipt: token }, controller.signal), timeout]);
+      if (res.ok) return { requested: true, confirmed: true };
+      return { requested: true, confirmed: false, status: res.status, error: `revoke endpoint returned ${res.status}` };
+    } catch (e) {
+      // The receipt still expires on its own; the caller is told it was not confirmed.
+      return { requested: true, confirmed: false, error: `revoke request failed (${e instanceof Error ? e.message : String(e)})` };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /** A usable receipt, and whether it was reused from the cache. */
+  async function receipt(signal: AbortSignal): Promise<{ r: Receipt; reused: boolean }> {
+    if (cached && cached.expiresAt - RECEIPT_REFRESH_MARGIN_MS > now()) return { r: cached, reused: true };
+    // Concurrent tasks share one in-flight request. A revocation while it is
+    // in flight bumps the generation: the late receipt is revoked, not used.
+    const gen = generation;
+    pending ??= requestReceipt(signal).then(
+      (r) => {
+        if (gen !== generation) {
+          void revokeToken(r.receipt);
+          throw new NonRetryableProviderError("consent was withdrawn while a receipt was being issued");
+        }
+        cached = r;
+        pending = undefined;
+        return r;
+      },
+      (e) => {
+        if (gen === generation) pending = undefined;
+        throw e;
+      },
+    );
+    return { r: await pending, reused: false };
+  }
+
   return {
     id: `http:${endpoint}`,
     kind: "bedrock-via-server",
     complete: async (task, input, signal) => {
-      const res = await fetchImpl(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, input }),
-        signal,
-      });
+      const first = await receipt(signal);
+      let res = await post(endpoint, { task, input, consent: { receipt: first.r.receipt } }, signal);
+      if (res.status === 403) {
+        // The server rejected the receipt: never reuse it.
+        if (cached === first.r) cached = undefined;
+        if (first.reused) {
+          // A reused receipt may have expired or been revoked server-side
+          // (e.g. after a server restart): one fresh receipt, one retry.
+          const fresh = await receipt(signal);
+          res = await post(endpoint, { task, input, consent: { receipt: fresh.r.receipt } }, signal);
+          if (res.status === 403 && cached === fresh.r) cached = undefined;
+        }
+      }
       if (!res.ok) {
         const errBody = await res.json().catch(() => undefined);
-        // The server answers {fallback:"deterministic"} when no model is
-        // configured, the model is down or the caller is throttled; a 400 means
-        // the request itself is invalid. Retrying cannot help in either case.
-        if (res.status === 400 || (isPlainObject(errBody) && errBody.fallback === "deterministic"))
+        // The server answers {fallback:"deterministic"} when the consent
+        // receipt is not accepted (403), no model is configured, the model is
+        // down or the caller is throttled; a 400 means the request itself is
+        // invalid. Retrying cannot help in any of these cases.
+        if (res.status === 400 || res.status === 403 || (isPlainObject(errBody) && errBody.fallback === "deterministic"))
           throw new NonRetryableProviderError(`agent endpoint returned ${res.status} (deterministic fallback requested)`);
         throw new Error(`agent endpoint returned ${res.status}`);
       }
       const body = await res.json();
       return isPlainObject(body) && "output" in body ? body.output : body;
+    },
+    revokeConsent: async () => {
+      const token = cached?.receipt;
+      cached = undefined;
+      pending = undefined;
+      generation++;
+      return token ? revokeToken(token) : { requested: false };
     },
   };
 }

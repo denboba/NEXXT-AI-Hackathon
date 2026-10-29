@@ -144,6 +144,7 @@ export function Simulator({
           <ComposedChart
             data={result.points}
             margin={{ top: 15, right: 8, left: -24, bottom: 0 }}
+            accessibilityLayer={false}
           >
             <defs>
               <linearGradient id="projection-fill" x1="0" y1="0" x2="0" y2="1">
