@@ -128,6 +128,8 @@ function strategyComparison(list) {
     row("Share of seeded paths reaching the target", (s) => pct(s.outcomeRange.reachShare)),
     row("Portfolio volatility (synthetic)", (s) => `${pct(s.outcomeRange.portfolioVolatility)}/yr`),
     row("Candidates considered", (s) => s.candidates.map((c) => `${c.label} ${pct(c.equityShare)}`).join(", ")),
+    // First rationale sentence (choiceSentence in src/agents/strategy.ts): engine-generated text, no user input.
+    row("Why this mix", (s) => s.rationale.split(" Labels follow the actual equity share")[0]),
     row("Findings addressed / acknowledged", (s) => `${s.addressedFindings.join(", ") || "none"} / ${s.acknowledgedFindings.join(", ") || "none"}`),
   ]);
 }

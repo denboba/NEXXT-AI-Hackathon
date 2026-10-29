@@ -8,7 +8,7 @@ The **Decision Lab** extends the coach into a bounded multi-stage workflow: **Go
 
 **Without installing anything** (Node.js with native TypeScript type stripping: Node 24 as declared in `engines`, also verified on Node 22.23.4; no `npm ci`, no network, no API key):
 
-1. `npm run demo -- --replay monthlyContribution=900` prints the full Ana journey: stage timeline (fresh or reused, with the reason), every traced tool call, the challenger findings with severity and evidence, the v1 vs v2 strategy comparison (label, equity, buckets, projection, seeded outcome range, reach share), the 16 guardrail checks, levers, the next step and a counterfactual replay showing which stages were reused or recomputed.
+1. `npm run demo -- --replay monthlyContribution=900` prints the full Ana journey: stage timeline (fresh or reused, with the reason), every traced tool call, the challenger findings with severity and evidence, the v1 vs v2 strategy comparison (label, equity, buckets, projection, seeded outcome range, reach share, and the rationale sentence that names which limit bound the choice), the 16 guardrail checks, levers, the next step and a counterfactual replay showing which stages were reused or recomputed.
 2. `npm run eval` runs all 21 evaluation scenarios against the real orchestrator (exit 1 on any failure).
 3. `npm run test:core` runs the dependency-free unit and integration tests.
 4. Read the committed evidence: [docs/evidence/demo-ana.md](docs/evidence/demo-ana.md) and [docs/evidence/eval-report.md](docs/evidence/eval-report.md). Both are generated output (fixed clock, fixed seed, synthetic data); `npm run evidence:check` regenerates them in memory and fails if they differ, and `npm run evidence` rewrites them.
@@ -189,7 +189,7 @@ Commands below were run in the build sandbox for this revision (Node v22.23.4, g
 | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `npm run demo`                            | Ana journey printed (completed, validated-with-open-issues, 1 revision, 23 tool calls, 16 of 16 guardrail checks); exit 0 |
 | `npm run eval`                            | 21 scenarios, 21 passed, 0 failed; 317/317 assertions; exit 0                               |
-| `npm run test:core`                       | 120 tests, 120 pass, 0 fail                                                                 |
+| `npm run test:core`                       | 121 tests, 121 pass, 0 fail                                                                 |
 | `npm run evidence:check`                  | both `docs/evidence` files match freshly generated output; exit 0                           |
 | `npm run typecheck:core`                  | exit 0                                                                                      |
 | `npm run check:syntax`                    | `check-syntax: 49 file(s) OK (47 src via TypeScript 5.9.2, 2 server/*.mjs via node --check).` |

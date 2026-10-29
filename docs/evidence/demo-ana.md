@@ -137,6 +137,7 @@ Tests run: projection-recompute, severe-crash-before-goal, goal-two-years-earlie
 | Share of seeded paths reaching the target | 66.7% | 28.2% |
 | Portfolio volatility (synthetic) | 8.8%/yr | 6.1%/yr |
 | Candidates considered | Cautious 20.0%, Balanced 35.0%, Balanced 50.0% | Cautious 20.0%, Cautious 22.7%, Cautious 25.7% |
+| Why this mix | Balanced (about 50.0% equity) is the highest-equity candidate allowed by the constraints (max equity 66.7%; eligible funds reach at most 50.0%) and not riskier than your stated preference (Growth-tilted). | Cautious (about 25.7% equity) is the highest-equity candidate allowed by the constraints (max equity 25.9%) and not riskier than your stated preference (Growth-tilted). |
 | Findings addressed / acknowledged | none / none | liquidity-need / single-stock-concentration |
 
 ## Guardrail checks

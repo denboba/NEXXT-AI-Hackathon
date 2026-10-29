@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { profileAgent } from "../../src/agents/profile.ts";
 import { dataAgent } from "../../src/agents/data.ts";
 import { STATED_RISK_CAP, suitabilityAgent, horizonEquityCap, lossEquityCap } from "../../src/agents/suitability.ts";
-import { choiceSentence, labelForEquity, strategyAgent } from "../../src/agents/strategy.ts";
+import { bandUpperEdge, choiceSentence, labelForEquity, strategyAgent } from "../../src/agents/strategy.ts";
 import { challengerAgent } from "../../src/agents/challenger.ts";
 import { guardrailAgent, bannedClaims, unbackedSummaryNumbers } from "../../src/agents/guardrail.ts";
 import { nextStepAgent } from "../../src/agents/nextStep.ts";
@@ -110,7 +110,7 @@ test("suitability: caps, reserve rule and never overriding constraints", async (
 test("strategy: candidates from the catalogue, never changes target/horizon", async () => {
   const { ctx } = await pipeline(demoProfile);
   const s = ctx.strategy!;
-  assert.ok(s.candidates.length >= 2 && s.candidates.length <= 3);
+  assert.ok(s.candidates.length >= 2 && s.candidates.length <= 4);
   assert.equal(s.targetLei, 90000);
   assert.equal(s.horizonYears, 7);
   assert.equal(s.liquidityBuckets[0].amountLei, 15000);
@@ -186,20 +186,45 @@ test("strategy: rationale names the limit that actually bound the choice", async
   const byPreference = choiceSentence(cands[1], cands, true, 0.7, "Balanced");
   assert.doesNotMatch(byPreference, /allowed by the constraints \(max equity 70\.0%\) and not riskier/);
   assert.match(byPreference, /highest-equity candidate not riskier than your stated preference \(Balanced\)/);
-  assert.match(byPreference, /Growth-tilted \(about 70% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference/);
+  assert.match(byPreference, /^Balanced \(about 45\.0% equity\)/);
+  assert.match(byPreference, /Growth-tilted \(about 70\.0% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference/);
   const noMatch = choiceSentence(cands[1], cands.slice(1), false, 0.7, "Cautious");
   assert.match(noMatch, /most cautious candidate allowed by the constraints .* no candidate matches your stated preference \(Cautious\)/);
 
-  // End to end: without a stated preference the default Balanced preference binds, and the
-  // 70% Growth-tilted candidate that met the constraints is named as skipped.
+  // End to end: without a stated preference the default Balanced preference binds. The engine
+  // adds a candidate at the Balanced band edge, so it picks the highest Balanced mix the
+  // constraints allow (60%, like a stated Balanced preference), not the midpoint, and names
+  // the 70% Growth-tilted candidate that met the constraints as skipped.
   const s = (await pipeline({ ...normalProfile, statedRisk: undefined })).ctx.strategy!;
   assert.equal(s.label, "Balanced");
+  assert.ok(Math.abs(s.equityShare - bandUpperEdge("Balanced")) < 0.005, `equity ${s.equityShare}`);
   assert.ok(s.candidates.some((c) => c.label === "Growth-tilted" && c.equityShare > s.equityShare));
   assert.match(
     s.rationale,
-    /^Balanced \(about 45% equity\) is the highest-equity candidate not riskier than the default preference \(Balanced, no risk preference stated\); Growth-tilted \(about 70% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference\./,
+    /^Balanced \(about 60\.0% equity\) is the highest-equity candidate not riskier than the default preference \(Balanced, no risk preference stated\); Growth-tilted \(about 70\.0% equity\) is allowed by the constraints \(max equity 70\.0%\) but is riskier than that preference\./,
   );
   assert.doesNotMatch(s.rationale, /stated preference \(Balanced\)/);
+  const stated = (await pipeline({ ...normalProfile, statedRisk: "balanced" })).ctx.strategy!;
+  assert.equal(stated.equityShare, s.equityShare, "default preference behaves like a stated Balanced preference");
+});
+
+test("strategy: the equity shown in the rationale is never above the cap shown", async () => {
+  // Ana v2 case: chosen 25.7% under a 25.9% cap used to render as "about 26% equity".
+  const cands = [{ label: "Cautious" as const, equityShare: 0.257 }];
+  const sentence = choiceSentence(cands[0], cands, true, 0.259, "Growth-tilted");
+  assert.match(sentence, /^Cautious \(about 25\.7% equity\) is the highest-equity candidate allowed by the constraints \(max equity 25\.9%\)/);
+
+  const check = (rationale: string) => {
+    const m = /^\S+ \(about ([\d.]+)% equity\).*?\(max equity ([\d.]+)%[;)]/.exec(rationale);
+    assert.ok(m, rationale);
+    assert.ok(Number(m[1]) <= Number(m[2]), rationale);
+  };
+  const { ctx } = await pipeline(demoProfile);
+  check(ctx.strategy!.rationale);
+  // Ana v1: the 66.7% cap is above what the eligible funds reach (50%), and the sentence says so.
+  assert.match(ctx.strategy!.rationale, /^Balanced \(about 50\.0% equity\) is the highest-equity candidate allowed by the constraints \(max equity 66\.7%; eligible funds reach at most 50\.0%\)/);
+  for (const risk of ["steady", "balanced", "growth", undefined] as const) check((await pipeline({ ...normalProfile, statedRisk: risk })).ctx.strategy!.rationale);
+  for (let eq = 0.2; eq <= 0.9; eq += 0.0137) check(choiceSentence({ label: labelForEquity(eq), equityShare: eq }, [{ label: labelForEquity(eq), equityShare: eq }], true, eq + 0.0004, "Growth-tilted"));
 });
 
 test("challenger: seeded-outcome-range uses its own inputs; material only when the base case reaches but most paths miss", async () => {

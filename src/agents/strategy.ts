@@ -1,4 +1,4 @@
-// Agent D - Strategy. Builds up to three distinct candidate allocations from
+// Agent D - Strategy. Builds up to four distinct candidate allocations from
 // the fictional catalogue under the current constraints (labelled by their
 // actual equity share), projects each through the traced project-goal tool,
 // proposes one, and attaches a seeded synthetic outcome range
@@ -67,12 +67,21 @@ export function labelForEquity(equityShare: number): StrategyCandidate["label"] 
   return "Cautious";
 }
 
+/** Highest equity share a label's band allows (Growth-tilted has no upper edge). */
+export function bandUpperEdge(label: StrategyCandidate["label"]): number {
+  if (label === "Cautious") return LABEL_BANDS.cautiousUpTo;
+  if (label === "Balanced") return LABEL_BANDS.balancedUpTo;
+  return Infinity;
+}
+
 /**
  * First rationale sentence. It names the limit that actually bound the choice:
  * the constraints (the chosen candidate is the highest-equity one overall), the
  * stated preference (a higher-equity candidate within the constraints was
  * skipped because its label is riskier), or neither candidate matching the
- * preference (the most cautious one is used).
+ * preference (the most cautious one is used). Equity shares and the cap use the
+ * same one-decimal precision; when the eligible funds stop below the cap, that
+ * lower ceiling is named too.
  */
 export function choiceSentence(
   chosen: Pick<StrategyCandidate, "label" | "equityShare">,
@@ -81,10 +90,14 @@ export function choiceSentence(
   cap: number,
   preferredLabel: StrategyCandidate["label"],
   preferenceStated = true,
+  maxBlockEquity = Infinity,
 ): string {
-  const pct = (x: number) => Math.round(x * 100);
+  // Same one-decimal precision as the cap, so a chosen share inside the cap never reads as above it.
+  const pct = (x: number) => (x * 100).toFixed(1);
   const pref = preferenceStated ? `your stated preference (${preferredLabel})` : `the default preference (${preferredLabel}, no risk preference stated)`;
-  const capText = `max equity ${(cap * 100).toFixed(1)}%`;
+  // When the eligible funds stop below the cap, say so: otherwise a chosen share below the cap
+  // reads as if the cap had not been the limit.
+  const capText = `max equity ${pct(cap)}%${maxBlockEquity < cap ? `; eligible funds reach at most ${pct(maxBlockEquity)}%` : ""}`;
   const head = `${chosen.label} (about ${pct(chosen.equityShare)}% equity)`;
   if (!matchesPreference)
     return `${head} is the most cautious candidate allowed by the constraints (${capText}); no candidate matches ${pref}.`;
@@ -261,11 +274,17 @@ export async function strategyAgent(ctx: StageContext): Promise<StageResult<Stra
   const blocks = suit.maxEquityShare < 0.2 || nonCash.length === 0 ? eligible : nonCash;
   const maxBlockEquity = Math.max(...blocks.map((b) => b.equityShare));
   const cap = suit.maxEquityShare;
-  // Up to three distinct candidates spanning the allowed range: the most
-  // cautious eligible mix, the middle and the maximum allowed equity.
+  // Up to four distinct candidates spanning the allowed range: the most
+  // cautious eligible mix, the middle, the highest mix within the preferred
+  // label's band and the maximum allowed equity. The band-edge candidate only
+  // differs from the maximum when the preference adds no cap of its own (no
+  // stated risk, default Balanced), so the default preference gets the highest
+  // Balanced mix the constraints allow instead of the midpoint.
+  const risk = facts.statedRisk?.value;
+  const preferredLabel = risk ? PREFERENCE[risk] : "Balanced";
   const allowedMax = Math.min(cap, maxBlockEquity);
   const low = Math.min(Math.min(...blocks.map((b) => b.equityShare)), allowedMax);
-  const targets = [low, (low + allowedMax) / 2, allowedMax];
+  const targets = [low, (low + allowedMax) / 2, Math.min(allowedMax, bandUpperEdge(preferredLabel)), allowedMax].sort((a, b) => a - b);
   const project: ProjectFn = (p) => ctx.callTool("project-goal", p);
   const candidates: StrategyCandidate[] = [];
   for (const equityTarget of targets) {
@@ -285,8 +304,6 @@ export async function strategyAgent(ctx: StageContext): Promise<StageResult<Stra
 
   // Pick: the highest-equity candidate whose label is not riskier than the
   // stated preference (candidates are in ascending equity order).
-  const risk = facts.statedRisk?.value;
-  const preferredLabel = risk ? PREFERENCE[risk] : "Balanced";
   const withinPreference = candidates.filter((c) => LABEL_ORDER.indexOf(c.label) <= LABEL_ORDER.indexOf(preferredLabel));
   const chosen = withinPreference.length ? withinPreference.at(-1)! : candidates[0];
   const blend = blendedAssumptions(chosen.weights, catalogue, cma);
@@ -368,7 +385,7 @@ export async function strategyAgent(ctx: StageContext): Promise<StageResult<Stra
   const eqPct = Math.round(chosen.equityShare * 100);
   const lowerRiskAlsoReaches = candidates.find((c) => c.gapLei === 0 && c.equityShare < chosen.equityShare);
   const rationale = [
-    choiceSentence(chosen, candidates, withinPreference.length > 0, cap, preferredLabel, risk !== undefined),
+    choiceSentence(chosen, candidates, withinPreference.length > 0, cap, preferredLabel, risk !== undefined, maxBlockEquity),
     `Labels follow the actual equity share: ${LABEL_BANDS_TEXT}.`,
     maxBlockEquity < cap ? `Blocks with a longer recommended holding period than ${horizon} years are excluded.` : "",
     buckets.length ? `${buckets.length} liquidity bucket(s) totalling ${money(allocated())} lei are held in cash outside the invested part.` : "",
