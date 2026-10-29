@@ -30,10 +30,16 @@ export function Brand({ compact = false }: { compact?: boolean }) {
   );
 }
 const steps = ["Discover", "Explore", "Continue", "Your investment"];
+const labLinks = [
+  { to: "/decision", label: "Decision Lab" },
+  { to: "/lab", label: "Evaluation Lab" },
+  { to: "/growth", label: "Growth" },
+];
 export function Header() {
   const { pathname } = useLocation();
   const { state } = useJourney();
   const [menu, setMenu] = useState(false);
+  const labPage = labLinks.some((l) => l.to === pathname);
   const stage =
     pathname === "/"
       ? 0
@@ -52,11 +58,25 @@ export function Header() {
             <nav className="desktop-nav" aria-label="Main navigation">
               <a href="#how-it-works">How it works</a>
               <a href="#your-questions">Your questions, answered</a>
+              <Link to="/decision">Decision Lab</Link>
               <Button asChild size="small">
                 <Link to="/coach">
                   Let’s get started <ArrowUpRight size={16} />
                 </Link>
               </Button>
+            </nav>
+          ) : labPage ? (
+            <nav className="lab-nav" aria-label="Labs">
+              {labLinks.map((l) => (
+                <Link
+                  key={l.to}
+                  to={l.to}
+                  className={l.to === pathname ? "active" : undefined}
+                  aria-current={l.to === pathname ? "page" : undefined}
+                >
+                  {l.label}
+                </Link>
+              ))}
             </nav>
           ) : (
             <nav className="journey-nav" aria-label="Your journey">
@@ -106,10 +126,15 @@ export function Header() {
               <Link to="/account/invest">Explore funds</Link>
             )}
             <a href="/#how-it-works">How it works</a>
+            {labLinks.map((l) => (
+              <Link key={l.to} to={l.to}>
+                {l.label}
+              </Link>
+            ))}
           </nav>
         )}
       </header>
-      {pathname !== "/" && (
+      {pathname !== "/" && !labPage && (
         <div className="mobile-progress">
           Step {stage + 1} of 4 <span>— {steps[stage]}</span>
         </div>
@@ -129,6 +154,11 @@ export function Footer() {
         </p>
       </div>
       <div className="footer-links">
+        {labLinks.map((l) => (
+          <Link key={l.to} to={l.to}>
+            {l.label}
+          </Link>
+        ))}
         <Dialog
           title="About this experience"
           description="A safe place to explore the ideas, without committing to an investment."
@@ -144,6 +174,12 @@ export function Footer() {
             Free-text questions may be sent to Amazon Bedrock when the live
             coach is available. Do not enter bank credentials or personal
             financial details.
+          </p>
+          <p>
+            The Decision Lab runs its assessment in this browser with synthetic
+            planning assumptions. It only uses Amazon Bedrock if you select it
+            and agree first. The adviser briefing is a local download; nothing
+            is sent to Raiffeisen.
           </p>
           <p>
             Forecasts use simplified assumptions and do not predict future

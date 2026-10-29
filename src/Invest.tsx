@@ -26,6 +26,7 @@ import { Assumptions, Simulator } from "./components/Simulator";
 import { useJourney } from "./lib/journey";
 import { eligibleProducts, money, pct, products, project } from "./lib/finance";
 import type { Product } from "./lib/finance";
+import { track } from "./lib/analytics";
 
 function RiskScale({ value }: { value: number }) {
   return (
@@ -439,6 +440,11 @@ export function Success() {
   const { state, update } = useJourney();
   const [downloaded, setDownloaded] = useState(false);
   const product = products.find((p) => p.id === state.productId)!;
+  const showPlan = state.authenticated && state.activated;
+  useEffect(() => {
+    if (showPlan)
+      track("journey_completed", { stage: "demo-plan", status: "activated" });
+  }, [showPlan]);
   if (!state.authenticated) return <Navigate to="/onboarding" replace />;
   if (!state.activated) return <Navigate to="/account/plan" replace />;
   const projection = project(

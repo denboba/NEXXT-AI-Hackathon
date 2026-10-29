@@ -16,6 +16,14 @@ const Plan = lazy(() => import("./Invest").then((m) => ({ default: m.Plan })));
 const Success = lazy(() =>
   import("./Invest").then((m) => ({ default: m.Success })),
 );
+const DecisionLab = lazy(() => import("./DecisionLab"));
+const EvalLab = lazy(() => import("./EvalLab"));
+const Growth = lazy(() => import("./Growth"));
+const labTitles: Record<string, string> = {
+  "/decision": "Decision Lab",
+  "/lab": "Evaluation Lab",
+  "/growth": "Growth view",
+};
 class ErrorBoundary extends Component<
   { children: ReactNode },
   { failed: boolean }
@@ -52,7 +60,7 @@ export default function App() {
   const { storageAvailable } = useJourney();
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
-    document.title = `${pathname === "/" ? "AI Investment Coach" : pathname === "/coach" ? "Your investment coach" : pathname.startsWith("/onboarding") ? "Your next step" : "Your demo investment"} · Raiffeisen Concept`;
+    document.title = `${labTitles[pathname] ?? (pathname === "/" ? "AI Investment Coach" : pathname === "/coach" ? "Your investment coach" : pathname.startsWith("/onboarding") ? "Your next step" : "Your demo investment")} · Raiffeisen Concept`;
   }, [pathname]);
   return (
     <ErrorBoundary>
@@ -83,6 +91,9 @@ export default function App() {
             <Route path="/account/invest" element={<Invest />} />
             <Route path="/account/plan" element={<Plan />} />
             <Route path="/account/success" element={<Success />} />
+            <Route path="/decision" element={<DecisionLab />} />
+            <Route path="/lab" element={<EvalLab />} />
+            <Route path="/growth" element={<Growth />} />
             <Route
               path="*"
               element={

@@ -25,6 +25,12 @@ async function start(options) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
+    postAgent: (body) =>
+      fetch(url + "/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
   };
 }
 describe("coach API", () => {
@@ -97,5 +103,82 @@ describe("coach API", () => {
       "region",
       "status",
     ]);
+  });
+});
+const agentRequest = {
+  task: "explain-strategy",
+  input: {
+    label: "Balanced",
+    equityPct: 50,
+    nominalLei: 98521,
+    realLei: 67727,
+    targetLei: 90000,
+    gapLei: 0,
+    horizonYears: 7,
+  },
+};
+describe("agent API", () => {
+  it("asks the browser to fall back to deterministic rules when no key is configured", async () => {
+    const client = await start({
+      hasKey: () => false,
+      requestAgent: () => {
+        throw new Error("Must not be called");
+      },
+    });
+    const response = await client.postAgent(agentRequest);
+    expect(response.status).toBe(503);
+    expect((await response.json()).fallback).toBe("deterministic");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+  it("returns structured output and passes only allowed input fields", async () => {
+    let received;
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: async (task, input) => {
+        received = { task, input };
+        return { text: "An illustration, not a forecast.", citedNumbers: [] };
+      },
+    });
+    const response = await client.postAgent({
+      ...agentRequest,
+      input: { ...agentRequest.input, extra: "not forwarded" },
+    });
+    expect(await response.json()).toEqual({
+      output: { text: "An illustration, not a forecast.", citedNumbers: [] },
+      source: "bedrock",
+    });
+    expect(received).toEqual(agentRequest);
+  });
+  it("reports a model failure without exposing its exception text", async () => {
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: async () => {
+        throw new Error("private upstream details");
+      },
+    });
+    const response = await client.postAgent(agentRequest);
+    expect(response.status).toBe(503);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain("private upstream");
+    expect(text).toContain("deterministic");
+  });
+  it.each([
+    { task: "unknown-task", input: {} },
+    { task: "extract-profile", input: { text: "x".repeat(9000) } },
+    { task: "extract-profile", input: "not an object" },
+    { ...agentRequest, input: { ...agentRequest.input, nominalLei: "lots" } },
+    {
+      task: "explain-objections",
+      input: { findings: [{ id: "a", severity: "critical", message: "m" }] },
+    },
+    null,
+  ])("rejects invalid agent payloads before calling the model", async (body) => {
+    const client = await start({
+      hasKey: () => true,
+      requestAgent: () => {
+        throw new Error("Must not be called");
+      },
+    });
+    expect((await client.postAgent(body)).status).toBe(400);
   });
 });
