@@ -4,7 +4,6 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUpRight,
-  Check,
   Clock3,
   Coins,
   HeartHandshake,
@@ -12,133 +11,63 @@ import {
   ShieldCheck,
   Sprout,
   TrendingDown,
-  TrendingUp,
   Wallet,
   CircleHelp,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Disclosure } from "./components/Layout";
-import { purchasingPower, money } from "./lib/finance";
+import { INFLATION, purchasingPower, money, pct } from "./lib/finance";
+/* Typical easy-access savings rate, used only in the hero illustration. */
+const SAVINGS_RATE = 0.005;
 export default function Landing() {
   const [years, setYears] = useState(5);
   const power = purchasingPower(10000, years);
   return (
     <main>
-      <section className="hero container">
-        <div className="hero-copy">
-          <div className="eyebrow">
-            <span className="yellow-dot" /> A LITTLE CLARITY. A BIG FIRST STEP.
-          </div>
-          <h1>
-            Turn idle cash
-            <br />
-            into a{" "}
-            <span className="underline-accent">
-              first
-              <br className="desktop-break" /> investment.
-            </span>
-          </h1>
-          <p className="hero-description">
-            Your money should work for your goals. Explore what a monthly
-            investment could look like, with a friendly coach that makes it all
-            make sense.
-          </p>
-          <div className="hero-actions">
-            <Button asChild>
-              <Link to="/coach">
-                Start my 2-minute investment journey <ArrowUpRight size={18} />
-              </Link>
-            </Button>
-            <a className="how-link" href="#how-it-works">
-              See how it works <ArrowDown size={15} />
-            </a>
-          </div>
-          <div className="hero-reassurance">
-            <span>
-              <Check size={14} /> No sign-up to explore
-            </span>
-            <span>
-              <Check size={14} /> At your own pace
-            </span>
-          </div>
-        </div>
-        <div className="hero-art">
-          <div className="art-grid" />
-          <div className="art-orbit orbit-one" />
-          <div className="art-orbit orbit-two" />
-          <div className="art-label">
-            <span className="mini-spark">✳</span> SMALL STEPS. REAL
-            POSSIBILITIES.
-          </div>
-          <div className="growth-card">
-            <div className="growth-card-heading">
-              <span className="icon-tile">
-                <TrendingUp size={20} />
+      <section className="ad-hero" aria-labelledby="ad-hero-title">
+        <div className="ad-hero-inner container">
+          <div className="ad-chat" aria-label="Your money, in a group chat">
+            <span className="ad-sticker">
+              your money rn{" "}
+              <span role="img" aria-label="eyes">
+                👀
               </span>
-              <span>
-                Your future starts with
-                <br />
-                <strong>500 lei a month.</strong>
-              </span>
-              <span className="card-ellipsis">···</span>
-            </div>
-            <div className="growth-value">
-              A little today.
-              <br />
-              <span>More possibilities tomorrow.</span>
-            </div>
-            <div className="growth-visual">
-              <svg viewBox="0 0 380 140" aria-hidden="true">
-                <defs>
-                  <linearGradient id="hero-fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop stopColor="#eee22d" stopOpacity=".5" />
-                    <stop offset="1" stopColor="#eee22d" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                <path
-                  d="M0 130 C40 123 45 113 75 112 S110 91 138 94 S177 73 200 75 S240 47 260 49 S308 20 330 27 S358 7 380 7 L380 140 L0 140Z"
-                  fill="url(#hero-fill)"
-                />
-                <path
-                  d="M0 130 C40 123 45 113 75 112 S110 91 138 94 S177 73 200 75 S240 47 260 49 S308 20 330 27 S358 7 380 7"
-                  stroke="#84851b"
-                  strokeWidth="3"
-                  fill="none"
-                />
-                <circle
-                  cx="377"
-                  cy="8"
-                  r="5"
-                  fill="#84851b"
-                  stroke="white"
-                  strokeWidth="3"
-                />
-              </svg>
-              <div className="hero-chart-labels">
-                <span>Your first step</span>
-                <span>Your future</span>
-              </div>
-            </div>
-            <div className="growth-card-footer">
-              <span>
-                <span className="green-dot" /> A habit worth building
-              </span>
-              <span>Illustration only</span>
-            </div>
-          </div>
-          <div className="floating-coach">
-            <span className="coach-orb">
-              <Sprout size={22} />
             </span>
-            <span>
-              “Let’s find a starting point
-              <br />
-              <strong>that feels right for you.”</strong>
-            </span>
-            <span className="bubble-dots">•••</span>
+            <p className="ad-bubble">
+              Savings account: “I’m giving you {pct(SAVINGS_RATE)}”
+            </p>
+            <p className="ad-bubble ad-bubble-yellow">
+              Inflation: “lol I’m taking {pct(INFLATION)}”
+            </p>
+            <p className="ad-bubble">
+              Your money: “…so we’re just not talking about it?”
+            </p>
+            <p className="ad-bubble ad-bubble-coach">
+              <span className="ad-coach-orb" aria-hidden="true">
+                <Sprout size={16} />
+              </span>
+              Investment coach: “let’s talk. 2 minutes, no strings.”
+            </p>
           </div>
-          <div className="art-caption">
-            <ShieldCheck size={13} /> Your goals. Your pace. Your decision.
+          <div className="ad-copy">
+            <h1 id="ad-hero-title">Stop situationshipping with your cash.</h1>
+            <p className="ad-description">
+              Explore what a monthly investment could do, with a coach that
+              speaks human. No sign-up to explore.
+            </p>
+            <div className="ad-actions">
+              <Button asChild>
+                <Link to="/coach">
+                  See what it could do <ArrowRight size={20} />
+                </Link>
+              </Button>
+              <a className="ad-how-link" href="#how-it-works">
+                How it works <ArrowDown size={15} />
+              </a>
+            </div>
+            <p className="ad-fine-print">
+              Illustrative rates. Investments carry risk; capital may be lost.
+            </p>
           </div>
         </div>
       </section>
